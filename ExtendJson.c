@@ -7,18 +7,12 @@
 #define EJ_STR_MAX (INT_MAX / 2)
 #define ej_new0(struct_type, n_structs)  ej_malloc0(sizeof(struct_type) * n_structs)
 
-struct _EJBuffer {
-  const gchar *content;
-  size_t length;
-  size_t offset;
-};
-
 const gchar* EJ_TYPE_NAMES[EJ_RAW] = { "Invalid", "Boolean", "String", "Array", "Number", "Object", "Null", "Raw" };
 
 /* declare */
-void ej_print_value_inner(EJValue *data, gpointer user_data);
-void ej_print_object_pair_inner(EJObjectPair *value, gpointer user_data);
-void ej_print_array_value_inner(size_t arrlen, size_t index, EJValue *data, gpointer user_data);
+static void ej_print_value_inner(EJValue *data, gpointer user_data);
+static void ej_print_object_pair_inner(EJObjectPair *value, gpointer user_data);
+static void ej_print_array_value_inner(size_t arrlen, size_t index, EJValue *data, gpointer user_data);
 
 gpointer ej_malloc0(size_t size) {
   gpointer pt = g_malloc0(size);
@@ -143,6 +137,14 @@ EJBool ej_skip_whitespace(EJBuffer *buffer) {
   }
 
   return true;
+}
+
+const gchar *ej_get_data_type_name(EJ_TYPE type) {
+  if (type < 0 || type > EJ_RAW) {
+    return NULL;
+  }
+
+  return EJ_TYPE_NAMES[type];
 }
 
 /* print */
@@ -309,11 +311,11 @@ EJBool ej_print_value(EJValue *data, gchar **buffer) {
   }
 }
 
-void ej_print_value_inner(EJValue *data, gpointer user_data) {
+static void ej_print_value_inner(EJValue *data, gpointer user_data) {
   ej_print_value(data, user_data);
 }
 
-void ej_print_object_pair_inner(EJObjectPair *pair, gpointer user_data) {
+static void ej_print_object_pair_inner(EJObjectPair *pair, gpointer user_data) {
   gchar *str = NULL;
   gchar **udata;
   GString *value;
@@ -337,7 +339,7 @@ void ej_print_object_pair_inner(EJObjectPair *pair, gpointer user_data) {
   g_string_free(value, false);
 }
 
-void ej_print_array_value_inner(size_t arrlen, size_t index, EJValue *data, gpointer user_data) {
+static void ej_print_array_value_inner(size_t arrlen, size_t index, EJValue *data, gpointer user_data) {
   ej_print_array_value(arrlen, index, data, user_data);
 }
 
