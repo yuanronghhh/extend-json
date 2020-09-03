@@ -4,11 +4,11 @@
 1. For tree structure in json.
 ```json
 {
-  layout: {
-    properties:[{ "key1": "layoutvalue", "key2": []}],
-    children:[{
+  "layout": {
+    "properties":[{ "key1": "layoutvalue", "key2": []}],
+    "children":[{
       "name": "child1",
-      "properties":[{"childKey1": "childValue1"}]
+      "properties":[{"childKey1": "childValue1"}],
       "children": []
     }]
   }
