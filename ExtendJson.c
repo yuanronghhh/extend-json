@@ -16,9 +16,9 @@ static void ej_print_array_value_inner(size_t arrlen, size_t index, EJValue *dat
 
 gpointer ej_malloc0(size_t size) {
   gpointer pt = g_malloc0(size);
-  if (!pt) { 
-    printf("%s ", "malloc failed"); 
-    abort(); 
+  if (!pt) {
+    printf("%s ", "malloc failed");
+    abort();
   }
   return pt;
 }
@@ -107,7 +107,7 @@ const gchar *ej_read(EJBuffer *buffer, int pos) {
 }
 
 EJBool ej_valid(EJBuffer *buffer, int pos) {
-  if (!buffer || ((buffer->offset + pos) >= buffer->length)) {
+  if (!buffer || ((buffer->offset + pos) < 0) || ((buffer->offset + pos) >= buffer->length)) {
     return false;
   }
 
@@ -182,10 +182,10 @@ EJBool ej_print_array_value(size_t arrlen, size_t index, EJValue *data, gchar **
 
   if (index + 1 == arrlen) {
     *buffer = value->str;
-  } 
+  }
   else {
-    value = g_string_append(value, ", "); 
-    *buffer = value->str; 
+    value = g_string_append(value, ", ");
+    *buffer = value->str;
   }
   g_string_free(value, false);
 
@@ -268,11 +268,15 @@ EJBool ej_print_object(EJObject *data, gchar **buffer) {
   if (!data) { return false; }
 
   value = g_string_new("{");
-  g_ptr_array_foreach(data, (GFunc)ej_print_object_pair_inner, buffer);
-  if(!*buffer) { return false; }
 
-  value = g_string_append(value, *buffer); g_free(*buffer);
-  value = g_string_truncate(value, (value->len-1)); // delete last ','
+  if (data->len > 0) {
+    g_ptr_array_foreach(data, (GFunc)ej_print_object_pair_inner, buffer);
+    if(*buffer == NULL) { return false; }
+
+    value = g_string_append(value, *buffer); g_free(*buffer);
+    value = g_string_truncate(value, (value->len-1)); // delete last ','
+  }
+
   value = g_string_append(value, "}");
 
   *buffer = value->str; g_string_free(value, false);
@@ -347,7 +351,7 @@ static void ej_print_array_value_inner(size_t arrlen, size_t index, EJValue *dat
 EJBool ej_parse_bool(EJBuffer *buffer, EJBool *data) {
   if (ej_valid(buffer, 5) && strncmp(ej_read(buffer, 0), "false", 5) == 0) {
     *data = false;
-  } 
+  }
   else if (ej_valid(buffer, 4) && strncmp(ej_read(buffer, 0), "true", 4) == 0) {
     *data = true;
   }
@@ -468,7 +472,7 @@ EJBool ej_parse_key(EJBuffer *buffer, EJString **data) {
     if (c == -1 || c == ' ' || c == '<' || c == '>' || c == ':' || c == '\"' || c == '\n') {
       if (pos == 0) {
         g_debug("Key length cannot be zero.");
-        return false; 
+        return false;
       }
       break;
     }
@@ -504,7 +508,7 @@ EJBool ej_parse_number(EJBuffer *buffer, EJNumber **data) {
       type = EJ_DOUBLE;
     }
     else if ((c >= '0' && c <= '9')
-      || c == '+' 
+      || c == '+'
       || c == '-'
       || c == 'E'
       || c == 'e') {
@@ -518,7 +522,7 @@ EJBool ej_parse_number(EJBuffer *buffer, EJNumber **data) {
 
   if (type == EJ_DOUBLE) {
     num->v.d = g_ascii_strtod(nstr, NULL);
-  } 
+  }
   else if (num->type == EJ_INT) {
     num->v.i = (int)g_ascii_strtoll(nstr, NULL, 10);
   }
@@ -538,17 +542,21 @@ fail:
 EJBool ej_parse_object_props(EJBuffer *buffer, EJHash **data) {
   EJHash *obj = NULL;
   EJObjectPair *pair = NULL;
+  gchar c;
 
-  g_assert(ej_valid(buffer, 0) && (*ej_read(buffer, 0) == '<'));
+  g_assert(ej_valid(buffer, 0) && ((*ej_read(buffer, 0) == '<')));
+  EJ_BUFFER_SKIP(buffer, 1);
+  if (!EJ_SKIP_AND_VALID(buffer)) { return false; }
 
   obj = ej_hash_new();
   if (*ej_read(buffer, 0) == '>') {
     goto success;
   }
 
-  do {
+  while (c = ej_access_c(buffer, 0)) {
+    if(c == -1) { goto fail; }
+
     pair = ej_object_pair_new();
-    EJ_BUFFER_SKIP(buffer, 1);
     /* parse key */
     if (!ej_parse_key(buffer, &pair->key)) {
       goto fail;
@@ -575,10 +583,9 @@ EJBool ej_parse_object_props(EJBuffer *buffer, EJHash **data) {
     }
 
     g_hash_table_insert(obj, pair->key, pair);
-  } while (*ej_read(buffer, 0) == ',');
 
-  if (!EJ_SKIP_AND_VALID(buffer)) {
-    goto fail;
+    if(*ej_read(buffer, 0) != ',') { break; }
+    EJ_BUFFER_SKIP(buffer, 1);
   }
 
   if (*ej_read(buffer, 0) != '>') {
@@ -602,22 +609,25 @@ fail:
 EJBool ej_parse_object(EJBuffer *buffer, EJObject **data) {
   EJObject *obj = NULL;
   EJObjectPair *pair = NULL;
+  gchar c;
 
-  g_assert(ej_valid(buffer, 0) && ((*ej_read(buffer, 0) == '{') || (*ej_read(buffer, 0) == '<')));
+  g_assert(ej_valid(buffer, 0) && ((*ej_read(buffer, 0) == '{')));
+  EJ_BUFFER_SKIP(buffer, 1);
+  if (!EJ_SKIP_AND_VALID(buffer)) { return false; }
 
   obj = ej_array_new();
-  if ((*ej_read(buffer, 0) == '}') || (*ej_read(buffer, 0) == '>')) {
+  if (*ej_read(buffer, 0) == '}') {
     goto success;
   }
 
-  do {
+  while(c = ej_access_c(buffer, 0)) {
+    if(c == -1) { goto fail; }
     pair = ej_object_pair_new();
-    EJ_BUFFER_SKIP(buffer, 1);
     /* parse key */
     if (!ej_parse_key(buffer, &pair->key)) {
       goto fail;
     }
- 
+
     if (*ej_read(buffer, 0) == '<') {
       if (!ej_parse_object_props(buffer, &pair->props)) {
         goto fail;
@@ -639,13 +649,12 @@ EJBool ej_parse_object(EJBuffer *buffer, EJObject **data) {
     }
 
     g_ptr_array_add(obj, pair);
-  } while (*ej_read(buffer, 0) == ',');
 
-  if (!EJ_SKIP_AND_VALID(buffer)) {
-    goto fail;
+    if(*ej_read(buffer, 0) != ',') { break; }
+    EJ_BUFFER_SKIP(buffer, 1);
   }
 
-  if (*ej_read(buffer, 0) != '>' && *ej_read(buffer, 0) != '}') {
+  if (*ej_read(buffer, 0) != '}') {
     goto fail;
   }
   EJ_BUFFER_SKIP(buffer, 1);
@@ -665,7 +674,7 @@ fail:
 
 EJBool ej_parse_value(EJBuffer *buffer, EJValue **data) {
   EJValue *value = ej_new0(EJValue, 1);
- 
+
   if (!EJ_SKIP_AND_VALID(buffer)) { return false; }
 
   value->type = EJ_RAW;
@@ -678,7 +687,7 @@ EJBool ej_parse_value(EJBuffer *buffer, EJValue **data) {
     value->type = EJ_BOOLEAN;
     EJ_BUFFER_SKIP(buffer, (value->v.bvalue ? 4 : 5));
     return true;
-  } 
+  }
   else if (ej_valid(buffer, 4) && strncmp(ej_read(buffer, 0), "null", 4) == 0) {
     *data = value;
     value->type = EJ_NULL;
@@ -692,30 +701,30 @@ EJBool ej_parse_value(EJBuffer *buffer, EJValue **data) {
       if (!ej_parse_number(buffer, &value->v.number)) {
         goto fail;
       }
-    } 
+    }
     else if (*ej_read(buffer, 0) == '\"') {
       value->type = EJ_STRING;
       if (!ej_parse_string(buffer, &value->v.string)) {
         goto fail;
       }
-    } 
+    }
     else if (*ej_read(buffer, 0) == '[') {
       value->type = EJ_ARRAY;
       if (!ej_parse_array(buffer, &value->v.array)) {
         goto fail;
       }
-    } 
+    }
     else if (*ej_read(buffer, 0) == '{') {
       value->type = EJ_OBJECT;
       if (!ej_parse_object(buffer, &value->v.object)) {
         goto fail;
       }
-    } 
+    }
     else {
       goto fail;
     }
   }
-  
+
   *data = value;
   return true;
 fail:
@@ -750,7 +759,7 @@ EJValue *ej_parse(const gchar *content) {
     if (ej_valid(&buffer, -10)) {
       str1 = g_strndup(ej_read(&buffer, -10), 10);
     }
-    g_debug("parse buffer at %zu:[%s]", buffer.offset, str1);
+    g_debug("parse buffer at %zu:%s", buffer.offset, str1);
 
     if (str1) { g_free(str1); }
 
