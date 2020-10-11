@@ -1,6 +1,6 @@
 #include "ExtendJson.h"
 
-#define EJ_BUFFER_SKIP(buffer, len) (buffer->offset = buffer->offset + (len))
+#define EJ_BUFFER_SKIP(buffer, len) ej_skip_line(buffer, len, 0)
 #define EJ_SKIP_AND_VALID(buffer) ej_skip_whitespace(buffer)
 #define EJ_ENSURE_CHAR(buffer, ch) (EJ_SKIP_AND_VALID(buffer) && *ej_read(buffer, 0) == ch)
 
@@ -124,16 +124,33 @@ const gchar ej_access_c(EJBuffer *buffer, int pos) {
   return c;
 }
 
+void ej_skip_line(EJBuffer *buffer, int cols, int rows) {
+  if(rows == 0) {
+    buffer->error->col += cols;
+  } else {
+    buffer->error->col = 1;
+  }
+
+  buffer->error->row += rows;
+  buffer->offset = buffer->offset + cols;
+}
+
 EJBool ej_skip_whitespace(EJBuffer *buffer) {
   gchar c;
   while ((c = ej_access_c(buffer, 0))) {
     if (c == -1) { return false; }
 
-    if (c != ' ' && c != '\n') {
-      break;
+    if(c == '\n') {
+      ej_skip_line(buffer, 1, 1);
+      continue;
     }
 
-    EJ_BUFFER_SKIP(buffer, 1);
+    if(c == ' ' || c == '\r') {
+      EJ_BUFFER_SKIP(buffer, 1);
+      continue;
+    }
+
+    break;
   }
 
   return true;
@@ -145,6 +162,20 @@ const gchar *ej_get_data_type_name(EJ_TYPE type) {
   }
 
   return EJ_TYPE_NAMES[type];
+}
+
+void ej_set_error(EJBuffer *buffer, gchar *fmt, ...) {
+  va_list args;
+
+  g_assert(buffer != NULL && buffer->error != NULL && "buffer error should not be NULL");
+
+  if (buffer->error->message != NULL) {
+    return;
+  }
+
+  va_start(args, fmt);
+  buffer->error->message = g_strdup_vprintf(fmt, args);
+  va_end(args);
 }
 
 /* print */
@@ -364,7 +395,7 @@ EJBool ej_parse_bool(EJBuffer *buffer, EJBool *data) {
 
 EJBool ej_parse_array(EJBuffer *buffer, EJArray **data) {
   EJArray *arr;
-  EJValue *value;
+  EJValue *value = NULL;
   size_t i = 0;
   gchar c;
 
@@ -375,6 +406,10 @@ EJBool ej_parse_array(EJBuffer *buffer, EJArray **data) {
   ej_skip_whitespace(buffer);
 
   arr = ej_array_new();
+
+  c = ej_access_c(buffer, 0);
+  if (c == ']') { goto success; }
+
   while (true) {
     if (!ej_parse_value(buffer, &value)) {
       goto fail;
@@ -383,11 +418,18 @@ EJBool ej_parse_array(EJBuffer *buffer, EJArray **data) {
 
     ej_skip_whitespace(buffer);
     c = ej_access_c(buffer, 0);
-    if (c == -1) { goto fail; }
-    if (c == ']') { break; }
-    if (c == ',') { EJ_BUFFER_SKIP(buffer, 1); }
+    if (c == ',') {
+      EJ_BUFFER_SKIP(buffer, 1);
+    }
+    else if (c == ']') {
+      break;
+    }
+    else {
+      goto fail;
+    }
   }
 
+success:
   if (*ej_read(buffer, 0) != ']') {
     goto fail;
   }
@@ -397,10 +439,7 @@ EJBool ej_parse_array(EJBuffer *buffer, EJArray **data) {
   return true;
 
 fail:
-  if (value != NULL) {
-    ej_free_value(value);
-  }
-
+  ej_set_error(buffer, "Parse array failed");
   g_ptr_array_unref(arr);
   return false;
 }
@@ -416,6 +455,7 @@ EJBool ej_parse_string(EJBuffer *buffer, EJString **data) {
 
   for (len = 0; c = ej_access_c(buffer, len); len++) {
     if (c == -1) {
+      ej_set_error(buffer, "occur buffer end when parse string");
       return false;
     }
 
@@ -442,6 +482,7 @@ EJBool ej_parse_string(EJBuffer *buffer, EJString **data) {
         len = len + 1;
         break;
       default:
+        ej_set_error(buffer, "occur not support escaped char %c when parse string", n);
         return false;
       }
     }
@@ -471,14 +512,14 @@ EJBool ej_parse_key(EJBuffer *buffer, EJString **data) {
   for (pos = 0; c = ej_access_c(buffer, pos); pos++) {
     if (c == -1 || c == ' ' || c == '<' || c == '>' || c == ':' || c == '\"' || c == '\n') {
       if (pos == 0) {
-        g_debug("Key length cannot be zero.");
+        ej_set_error(buffer, "Key length cannot be zero.");
         return false;
       }
       break;
     }
 
     if (pos + 1 > EJ_STR_MAX) {
-      g_debug("Key position %c length %zu too long.", c, pos + 1);
+      ej_set_error(buffer, "Key position %c length %zu too long.", c, pos + 1);
       return false;
     }
   }
@@ -487,6 +528,7 @@ EJBool ej_parse_key(EJBuffer *buffer, EJString **data) {
   EJ_BUFFER_SKIP(buffer, pos);
 
   if (!ej_valid(buffer, 0)) {
+    ej_set_error(buffer, "Occour buffer end when parse key.");
     g_free(key);
     return false;
   }
@@ -535,20 +577,21 @@ EJBool ej_parse_number(EJBuffer *buffer, EJNumber **data) {
   return true;
 
 fail:
+  ej_set_error(buffer, "Parse number failed");
   g_free(num);
   return false;
 }
 
-EJBool ej_parse_object_props(EJBuffer *buffer, EJHash **data) {
-  EJHash *obj = NULL;
+EJBool ej_parse_object_props(EJBuffer *buffer, EJObject *object, EJHash **data) {
+  EJHash *props = NULL, *hook = buffer->objectIDs;
   EJObjectPair *pair = NULL;
   gchar c;
 
-  g_assert(ej_valid(buffer, 0) && ((*ej_read(buffer, 0) == '<')));
+  g_assert(ej_valid(buffer, 0) && ((*ej_read(buffer, 0) == '<')) && (object != NULL));
   EJ_BUFFER_SKIP(buffer, 1);
   if (!EJ_SKIP_AND_VALID(buffer)) { return false; }
 
-  obj = ej_hash_new();
+  props = ej_hash_new();
   if (*ej_read(buffer, 0) == '>') {
     goto success;
   }
@@ -563,8 +606,14 @@ EJBool ej_parse_object_props(EJBuffer *buffer, EJHash **data) {
     }
 
     if (*ej_read(buffer, 0) == '<') {
-      if (!ej_parse_object_props(buffer, &pair->props)) {
+      if (!ej_parse_object_props(buffer, object, &pair->props)) {
         goto fail;
+      }
+    }
+
+    if (strncmp(pair->key, "id", 2) == 0) {
+      if (hook != NULL) {
+        g_hash_table_insert(hook, pair->key, object);
       }
     }
 
@@ -582,19 +631,19 @@ EJBool ej_parse_object_props(EJBuffer *buffer, EJHash **data) {
       goto fail;
     }
 
-    g_hash_table_insert(obj, pair->key, pair);
+    g_hash_table_insert(props, pair->key, pair);
 
     if(*ej_read(buffer, 0) != ',') { break; }
     EJ_BUFFER_SKIP(buffer, 1);
   }
 
+success:
   if (*ej_read(buffer, 0) != '>') {
     goto fail;
   }
   EJ_BUFFER_SKIP(buffer, 1);
 
-success:
-  *data = obj;
+  *data = props;
   return true;
 
 fail:
@@ -602,7 +651,7 @@ fail:
     ej_free_object_pair(pair);
   }
 
-  g_hash_table_unref(obj);
+  g_hash_table_unref(props);
   return false;
 }
 
@@ -629,7 +678,7 @@ EJBool ej_parse_object(EJBuffer *buffer, EJObject **data) {
     }
 
     if (*ej_read(buffer, 0) == '<') {
-      if (!ej_parse_object_props(buffer, &pair->props)) {
+      if (!ej_parse_object_props(buffer, obj, &pair->props)) {
         goto fail;
       }
     }
@@ -650,16 +699,23 @@ EJBool ej_parse_object(EJBuffer *buffer, EJObject **data) {
 
     g_ptr_array_add(obj, pair);
 
-    if(*ej_read(buffer, 0) != ',') { break; }
+    if(*ej_read(buffer, 0) != ',') {
+      if(*ej_read(buffer, 0) != '}') {
+        ej_set_error(buffer, "Missing , when parse object");
+        goto fail;
+      }
+      break;
+    }
     EJ_BUFFER_SKIP(buffer, 1);
   }
 
+success:
   if (*ej_read(buffer, 0) != '}') {
+    ej_set_error(buffer, "Not end with } when parse object");
     goto fail;
   }
   EJ_BUFFER_SKIP(buffer, 1);
 
-success:
   *data = obj;
   return true;
 
@@ -675,12 +731,10 @@ fail:
 EJBool ej_parse_value(EJBuffer *buffer, EJValue **data) {
   EJValue *value = ej_new0(EJValue, 1);
 
-  if (!EJ_SKIP_AND_VALID(buffer)) { return false; }
-
   value->type = EJ_RAW;
-  if (!buffer || (buffer->content == NULL)) {
-    goto fail;
-  }
+  g_assert(data != NULL && buffer != NULL && buffer->content != NULL);
+
+  if (!EJ_SKIP_AND_VALID(buffer)) { return false; }
 
   if (ej_parse_bool(buffer, &value->v.bvalue)) {
     *data = value;
@@ -728,6 +782,7 @@ EJBool ej_parse_value(EJBuffer *buffer, EJValue **data) {
   *data = value;
   return true;
 fail:
+  ej_set_error(buffer, "Parse value failed");
   ej_free_value(value);
   return false;
 }
@@ -744,28 +799,27 @@ static EJBool skip_utf8_bom(EJBuffer *const buffer) {
   return true;
 }
 
-EJValue *ej_parse(const gchar *content) {
-  EJBuffer buffer = { 0 };
+EJValue *ej_parse(EJError **error, const gchar *content) {
+  EJBuffer buffer = { NULL, 0, 0, NULL, NULL };
   gchar *str1;
   EJValue *value = NULL;
 
   buffer.content = (gchar *)content;
   buffer.length = ej_strlen((gchar *)content, EJ_STR_MAX);
   buffer.offset = 0;
+  buffer.objectIDs = g_hash_table_new_full(g_str_hash, g_str_equal, NULL, NULL);
+  buffer.error = ej_new0(EJError, 1);
+  buffer.error->row = 1;
+  buffer.error->col = 1;
 
   skip_utf8_bom(&buffer);
 
   if (!ej_parse_value(&buffer, &value)) {
-    if (ej_valid(&buffer, -10)) {
-      str1 = g_strndup(ej_read(&buffer, -10), 10);
-    }
-    g_debug("parse buffer at %zu:%s", buffer.offset, str1);
-
-    if (str1) { g_free(str1); }
-
+    g_warning("parse buffer at <%ld,%ld>:%s", buffer.error->row, buffer.error->col, buffer.error->message);
+    g_hash_table_unref(buffer.objectIDs);
     return NULL;
   }
 
-  g_debug("parse success");
+  g_debug("%s", "parse success");
   return value;
 }

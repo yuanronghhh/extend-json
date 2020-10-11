@@ -21,6 +21,8 @@ typedef struct _GPtrArray EJObject;
 typedef struct _GHashTable EJHash;
 typedef struct _EJObjectPair EJObjectPair;
 typedef struct _GPtrArray EJArray;
+typedef struct _EJError EJError;
+
 typedef gchar EJString;
 
 enum _EJ_NUMBER_TYPE {
@@ -43,6 +45,14 @@ struct _EJBuffer {
   const gchar *content;
   size_t length;
   size_t offset;
+  EJError *error;
+  EJHash *objectIDs;
+};
+
+struct _EJError {
+  size_t row;
+  size_t col;
+  gchar *message;
 };
 
 struct _EJObjectPair {
@@ -84,10 +94,10 @@ EJBool ej_parse_array(EJBuffer *buffer, EJArray **data);
 EJBool ej_parse_string(EJBuffer *buffer, EJString **data);
 EJBool ej_parse_key(EJBuffer *buffer, EJString **data);
 EJBool ej_parse_number(EJBuffer *buffer, EJNumber **data);
-EJBool ej_parse_object_props(EJBuffer *buffer, EJHash **data);
+EJBool ej_parse_object_props(EJBuffer *buffer, EJObject *object, EJHash **data);
 EJBool ej_parse_object(EJBuffer *buffer, EJObject **data);
 EJBool ej_parse_value(EJBuffer *buffer, EJValue **data);
-GLIB_AVAILABLE_IN_ALL EJValue *ej_parse(const gchar *content);
+GLIB_AVAILABLE_IN_ALL EJValue *ej_parse(EJError **error, const gchar *content);
 
 GLIB_AVAILABLE_IN_ALL EJBool ej_print_number(EJNumber *data, gchar **buffer);
 GLIB_AVAILABLE_IN_ALL EJBool ej_print_bool(EJBool data, gchar **buffer);
