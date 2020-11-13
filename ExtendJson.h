@@ -87,7 +87,9 @@ const gchar* EJ_TYPE_NAMES[EJ_RAW];
 GLIB_AVAILABLE_IN_ALL void ej_free_number(EJNumber *data);
 GLIB_AVAILABLE_IN_ALL void ej_free_value(EJValue *data);
 GLIB_AVAILABLE_IN_ALL void ej_free_object_pair(EJObjectPair *data);
+GLIB_AVAILABLE_IN_ALL void ej_buffer_free(EJBuffer *buffer);
 GLIB_AVAILABLE_IN_ALL const gchar *ej_get_data_type_name(EJ_TYPE type);
+GLIB_AVAILABLE_IN_ALL EJBool ej_object_get_value(EJObject *data, gchar *name, EJValue **value);
 
 EJBool ej_parse_bool(EJBuffer *buffer, EJBool *data);
 EJBool ej_parse_array(EJBuffer *buffer, EJArray **data);

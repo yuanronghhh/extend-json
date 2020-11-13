@@ -86,6 +86,15 @@ void ej_free_object_pair(EJObjectPair *data) {
   g_free(data);
 }
 
+void ej_buffer_free(EJBuffer *buffer) {
+  if (buffer->error != NULL) {
+    g_free(buffer->error->message);
+    g_free(buffer->error);
+  }
+  g_hash_table_unref(buffer->objectIDs);
+  g_free(buffer);
+}
+
 EJObjectPair *ej_object_pair_new() {
   EJObjectPair *pair = ej_new0(EJObjectPair, 1);
 
@@ -162,6 +171,23 @@ const gchar *ej_get_data_type_name(EJ_TYPE type) {
   }
 
   return EJ_TYPE_NAMES[type];
+}
+
+EJBool ej_object_get_value(EJObject *data, gchar *name, EJValue **value) {
+  size_t i;
+  EJObjectPair *pair = NULL;
+
+  for (i = 0; i < data->len; i++) {
+    pair = (EJObjectPair *)data->pdata[i];
+    g_return_val_if_fail((pair != NULL) && (pair->key != NULL) && (pair->value != NULL), false);
+
+    if (g_strcmp0(name, pair->key) == 0) {
+      *value = pair->value;
+      return true;
+    }
+  }
+
+  return false;
 }
 
 void ej_set_error(EJBuffer *buffer, gchar *fmt, ...) {
@@ -565,7 +591,7 @@ EJBool ej_parse_number(EJBuffer *buffer, EJNumber **data) {
   if (type == EJ_DOUBLE) {
     num->v.d = g_ascii_strtod(nstr, NULL);
   }
-  else if (num->type == EJ_INT) {
+  else if (type == EJ_INT) {
     num->v.i = (int)g_ascii_strtoll(nstr, NULL, 10);
   }
   g_free(nstr);
@@ -799,24 +825,25 @@ static EJBool skip_utf8_bom(EJBuffer *const buffer) {
   return true;
 }
 
+
 EJValue *ej_parse(EJError **error, const gchar *content) {
-  EJBuffer buffer = { NULL, 0, 0, NULL, NULL };
-  gchar *str1;
+  EJBuffer *buffer = ej_new0(EJBuffer, 1);
   EJValue *value = NULL;
 
-  buffer.content = (gchar *)content;
-  buffer.length = ej_strlen((gchar *)content, EJ_STR_MAX);
-  buffer.offset = 0;
-  buffer.objectIDs = g_hash_table_new_full(g_str_hash, g_str_equal, NULL, NULL);
-  buffer.error = ej_new0(EJError, 1);
-  buffer.error->row = 1;
-  buffer.error->col = 1;
+  buffer->content = (gchar *)content;
+  buffer->length = ej_strlen((gchar *)content, EJ_STR_MAX);
+  buffer->offset = 0;
+  buffer->objectIDs = g_hash_table_new_full(g_str_hash, g_str_equal, NULL, NULL);
+  buffer->error = ej_new0(EJError, 1);
+  buffer->error->row = 1;
+  buffer->error->col = 1;
 
-  skip_utf8_bom(&buffer);
+  skip_utf8_bom(buffer);
 
-  if (!ej_parse_value(&buffer, &value)) {
-    g_warning("parse buffer at <%ld,%ld>:%s", buffer.error->row, buffer.error->col, buffer.error->message);
-    g_hash_table_unref(buffer.objectIDs);
+  if (!ej_parse_value(buffer, &value)) {
+    g_warning("parse buffer at <%ld,%ld>:%s", buffer->error->row, buffer->error->col, buffer->error->message);
+    
+    ej_buffer_free(buffer);
     return NULL;
   }
 
