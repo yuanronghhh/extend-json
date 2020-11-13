@@ -1,7 +1,13 @@
 # ExtendJson, a simple json parser with key property
 
-## Example
-1. For tree structure in json.
+
+## what is this ?
+
+a simple extend json library for tree data.
+
+## example
+
+A tree structure in standard json like:
 ```json
 {
   "layout": {
@@ -15,7 +21,8 @@
 }
 ```
 
-2. Here example
+but now you can use like this:
+
 ```json
 {
   layout<key1: "layoutvalue", key2:[]>: {
@@ -24,33 +31,24 @@
 }
 ```
 
-## Usage
-```c
-int main(int argc, char *argv[]) {
-  gchar *output = NULL;
-  gchar *content = NULL;
-  GError *err = NULL;
-  size_t bsize = 0;
-  EJValue *value;
-  const gchar *filename = "<file-path>";
-
-  if (!g_file_get_contents(filename, &content, &bsize, &err)) {
-    g_error("%s", err->message);
-    return -1;
+### support @ prefix for extend
+```json
+{
+  layout<key1: "layoutvalue", key2:[]>: {
+    child1<@{bind:"click"}: "click_handler">: @{bind: "value2"}
   }
-
-  value = ej_parse(content);
-  ej_print_value(value, &output);
-
-  printf("%s", output);
-
-  ej_free_value(value);
-  g_free(output);
-
-  return 0;
 }
 ```
 
-## Note
+## usage
+please see test for example.
 
-Property key is unique between `<` and `>`
+```c
+// just use ej_parse function;
+EJValue *value = ej_parse(&error, str);
+if(error != NULL) {
+  g_print("<%u,%u>%s", error->row, error->col, error->message);
+}
+
+ej_free_value(value);
+```

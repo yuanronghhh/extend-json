@@ -1,21 +1,54 @@
 #include "ExtendJson.h"
 
-#define EJ_BUFFER_SKIP(buffer, len) ej_skip_line(buffer, len, 0)
-#define EJ_SKIP_AND_VALID(buffer) ej_skip_whitespace(buffer)
-#define EJ_ENSURE_CHAR(buffer, ch) (EJ_SKIP_AND_VALID(buffer) && *ej_read(buffer, 0) == ch)
-
-#define EJ_STR_MAX (INT_MAX / 2)
+#define EJ_DEBUG false
+#define EJ_LSTR(str) {sizeof(str) - 1, (gchar *)str}
+#define EJ_STR_MAX (INT_MAX - 2)
 #define ej_new0(struct_type, n_structs)  ej_malloc0(sizeof(struct_type) * n_structs)
 
-const gchar* EJ_TYPE_NAMES[EJ_RAW] = { "Invalid", "Boolean", "String", "Array", "Number", "Object", "Null", "Raw" };
+struct _EJBuffer {
+  const gchar *content;
+  size_t length;
+  size_t offset;
+  EJError *error;
+  EJ_MODE_TYPE mode;
+};
+
+static const gchar* EJ_TYPE_NAMES[EJ_RAW] = {
+  "Invalid", "Boolean", "String", "Array",
+  "Number", "Object", "EObject", "Null"
+  "Raw"
+};
+
+static const EJLString EJ_TOKEN_STR[EJ_TOKEN_RAW] = {
+  EJ_LSTR("true"), EJ_LSTR("false"), EJ_LSTR("null"), EJ_LSTR("{"), EJ_LSTR("["),
+  EJ_LSTR(","), EJ_LSTR("\""), EJ_LSTR("@"), EJ_LSTR("}"), EJ_LSTR("]"), EJ_LSTR("-"),
+  EJ_LSTR("<"), EJ_LSTR(">"), EJ_LSTR(":"), EJ_LSTR("."), EJ_LSTR("\0")
+};
 
 /* declare */
 static void ej_print_value_inner(EJValue *data, gpointer user_data);
 static void ej_print_object_pair_inner(EJObjectPair *value, gpointer user_data);
 static void ej_print_array_value_inner(size_t arrlen, size_t index, EJValue *data, gpointer user_data);
+static void ej_comment(EJBuffer *buffer);
 
-gpointer ej_malloc0(size_t size) {
-  gpointer pt = g_malloc0(size);
+static inline void ej_assert_object_pair(EJObjectPair *data) {
+  ej_assert(data != NULL);
+  if (data->key != NULL) {
+    ej_assert(data->key->type < EJ_RAW && data->key->type > EJ_INVALID);
+  }
+  if (data->value != NULL) {
+    ej_assert(data->value->type < EJ_RAW && data->value->type > EJ_INVALID);
+  }
+}
+
+static inline void ej_assert_value(EJValue *data) {
+  ej_assert(data != NULL);
+  ej_assert(data->type < EJ_RAW && data->type >= EJ_INVALID);
+}
+
+void* ej_malloc0(size_t size) {
+  void* pt = g_malloc0(size);
+
   if (!pt) {
     printf("%s ", "malloc failed");
     abort();
@@ -23,10 +56,10 @@ gpointer ej_malloc0(size_t size) {
   return pt;
 }
 
-size_t ej_strlen(gchar *s, size_t maxlen) {
+static size_t ej_strlen(const gchar *s) {
   size_t len;
 
-  for (len = 0; len < maxlen; len++, s++) {
+  for (len = 0; len < EJ_STR_MAX; len++, s++) {
     if (!*s) {
       break;
     }
@@ -34,56 +67,88 @@ size_t ej_strlen(gchar *s, size_t maxlen) {
   return len;
 }
 
+EJBool ej_value_equal(EJValue *v1, EJValue *v2) {
+  if (v1->type == EJ_STRING && v2->type == EJ_STRING) {
+    return ej_str_equal(v1->v.string, v2->v.string);
+  }
+  else if (v1->type == EJ_NUMBER && v2->type == EJ_NUMBER) {
+    return (v1->v.number->v.d - v2->v.number->v.d) == 0;
+  }
+
+  return false;
+}
+
 void ej_free_number(EJNumber *data) {
-  g_free(data);
+  ej_assert((data->type == EJ_INT) || (data->type == EJ_DOUBLE));
+  ej_free(data);
 }
 
 void ej_free_value(EJValue *data) {
-  if (data->v.bvalue) {
-    switch (data->type)
-    {
+  ej_assert_value(data);
+
+  if(data->v.object != NULL) {
+    switch (data->type) {
       case EJ_BOOLEAN:
       case EJ_INVALID:
       case EJ_RAW:
       case EJ_NULL: {
-        g_free(data);
         break;
       }
       case EJ_STRING: {
-        g_free(data->v.string);
+        ej_free(data->v.string);
         break;
       }
       case EJ_NUMBER: {
         ej_free_number(data->v.number);
-        g_free(data);
         break;
       }
       case EJ_ARRAY: {
-        g_ptr_array_unref(data->v.array);
-        g_free(data);
+        ej_free_ptr_array(data->v.array);
         break;
       }
+      case EJ_EOBJECT:
       case EJ_OBJECT: {
-        g_ptr_array_unref(data->v.object);
-        g_free(data);
+        ej_free_object(data->v.object);
         break;
       }
       default:
         break;
-      }
+    }
   }
+
+  ej_free(data);
+  data = NULL;
 }
 
 void ej_free_object_pair(EJObjectPair *data) {
-  g_free(data->key);
-  if (data->props != NULL) {
-    g_hash_table_unref(data->props);
+  ej_assert_object_pair(data);
+
+  if (data->key != NULL) {
+    ej_free_value(data->key);
   }
 
-  if(data->value != NULL) {
+  if (data->props != NULL) {
+    ej_free_object(data->props);
+  }
+
+  if (data->value != NULL) {
     ej_free_value(data->value);
   }
-  g_free(data);
+  ej_free(data);
+}
+
+void ej_free_error(EJError *error) {
+  if (error != NULL) {
+    ej_free(error->message);
+    ej_free(error);
+  }
+}
+
+void ej_free_buffer(EJBuffer *buffer) {
+  if(buffer->error->message == NULL) {
+    ej_free(buffer->error);
+  }
+  ej_free(buffer);
 }
 
 EJObjectPair *ej_object_pair_new() {
@@ -92,68 +157,216 @@ EJObjectPair *ej_object_pair_new() {
   return pair;
 }
 
-EJHash *ej_hash_new() {
-  EJHash *obj = g_hash_table_new_full(g_str_hash, g_str_equal, (GDestroyNotify)g_free, (GDestroyNotify)ej_free_value);
-  return obj;
-}
-
-EJArray *ej_array_new() {
-  EJArray *arr = g_ptr_array_new_with_free_func((GDestroyNotify)ej_free_value);
+EJArray *ej_value_array_new() {
+  EJArray *arr = ej_ptr_array_new_with_func(ej_free_value);
   return arr;
 }
 
-const gchar *ej_read(EJBuffer *buffer, int pos) {
-  return buffer->content + buffer->offset + pos;
+EJArray *ej_pair_array_new() {
+  EJArray *arr = ej_ptr_array_new_with_func(ej_free_object_pair);
+  return arr;
 }
 
+EJError *ej_error_new() {
+  EJError *error = ej_new0(EJError, 1);
+  error->row = 1;
+  error->col = 1;
+  error->message = NULL;
+
+  return error;
+}
+
+/* reader */
 EJBool ej_valid(EJBuffer *buffer, int pos) {
-  if (!buffer || ((buffer->offset + pos) < 0) || ((buffer->offset + pos) >= buffer->length)) {
+  if (!buffer || ((buffer->offset + pos) < 0) || ((buffer->offset + pos) > buffer->length)) {
     return false;
   }
 
   return true;
 }
 
-const gchar ej_access_c(EJBuffer *buffer, int pos) {
+static gchar *ej_read_inner(EJBuffer *buffer, int pos) {
+  return (char *)(buffer->content + buffer->offset + pos);
+}
+
+gchar *ej_read(EJBuffer *buffer, int pos) {
+  if(!ej_valid(buffer, 0)) {
+    return '\0';
+  }
+
+  return ej_read_inner(buffer, pos);
+}
+
+static const gchar ej_read_c_inner(EJBuffer *buffer, int pos) {
+  if (!ej_valid(buffer, pos)) {
+    return '\0';
+  }
+
+  return *ej_read_inner(buffer, pos);
+}
+
+EJBool ej_token_is(EJBuffer *buffer, EJ_TOKEN_TYPE etype) {
+  EJLString token = EJ_TOKEN_STR[etype];
+  EJBool bl;
+  if (!ej_valid(buffer, (int)token.len)) {
+    return false;
+  }
+
+  bl = (strncmp(token.value, ej_read_inner(buffer, 0), token.len) == 0);
+  return bl;
+}
+
+EJBool ej_ensure_char(EJBuffer *buffer, EJ_TOKEN_TYPE ch) {
+  if (!ej_skip_whitespace(buffer)) {
+    return false;
+  }
+
+  if (ej_token_is(buffer, ch)) {
+    return true;
+  }
+
+  return false;
+}
+
+gchar ej_read_c(EJBuffer *buffer, int pos) {
   gchar c;
   if (!ej_valid(buffer, pos)) {
-    return -1;
+    return '\0';
   }
-  c = *(buffer->content + buffer->offset + pos);
+  ej_comment(buffer);
+
+  if (!ej_valid(buffer, 0)) {
+    return '\0';
+  }
+  c = ej_read_c_inner(buffer, pos);
 
   return c;
 }
 
+void ej_skip_c(EJBuffer *buffer, gchar c) {
+  if (!ej_valid(buffer, 1)) {
+    return;
+  }
+
+  if (c == '\n') {
+    ej_skip_line(buffer, 1, 1);
+  }
+  else {
+    ej_skip_line(buffer, 1, 0);
+  }
+}
+
 void ej_skip_line(EJBuffer *buffer, int cols, int rows) {
-  if(rows == 0) {
+  if (rows == 0) {
     buffer->error->col += cols;
   } else {
     buffer->error->col = 1;
+#if EJ_DEBUG
+    printf("[new line]%ld,%c\n", buffer->error->row, ej_read_c(buffer, -1));
+#endif
   }
 
   buffer->error->row += rows;
   buffer->offset = buffer->offset + cols;
 }
 
+void ej_buffer_skip(EJBuffer *buffer, int pos) {
+  if (buffer == NULL || pos == 0) { return; }
+
+  ej_skip_line(buffer, pos, 0);
+}
+
 EJBool ej_skip_whitespace(EJBuffer *buffer) {
   gchar c;
-  while ((c = ej_access_c(buffer, 0))) {
-    if (c == -1) { return false; }
-
-    if(c == '\n') {
-      ej_skip_line(buffer, 1, 1);
+  while (true) {
+    c = ej_read_c_inner(buffer, 0);
+    if (c == '\0') { return false;}
+    if (c == ' ' || c == '\r' || c == '\n') {
+      ej_skip_c(buffer, c);
       continue;
     }
 
-    if(c == ' ' || c == '\r') {
-      EJ_BUFFER_SKIP(buffer, 1);
-      continue;
-    }
-
+    ej_comment(buffer);
     break;
   }
 
   return true;
+}
+
+EJBool ej_skip_utf8_bom(EJBuffer *buffer) {
+  if ((buffer == NULL) || (buffer->content == NULL) || (buffer->offset != 0)) {
+    return false;
+  }
+
+  if (ej_valid(buffer, 4) && (strncmp(ej_read_inner(buffer, 0), "\xEF\xBB\xBF", 3) == 0)) {
+    ej_buffer_skip(buffer, 3);
+  }
+
+  return true;
+}
+
+static gchar ej_next_c_inner(EJBuffer *buffer) {
+  ej_skip_c(buffer, ej_read_c_inner(buffer, 0));
+
+  return ej_read_c_inner(buffer, 0);
+}
+
+gchar ej_next_c(EJBuffer *buffer) {
+  if (buffer == NULL) { return '\0'; }
+
+  return ej_next_c_inner(buffer);
+}
+
+static bool ej_comment_line(EJBuffer *buffer) {
+  gchar c;
+  while (true) {
+    c = ej_next_c_inner(buffer);
+    if (c == '\0') { return false; }
+
+    if (c == '\n') { break; }
+  }
+
+  return true;
+}
+
+static bool ej_comment_multiple(EJBuffer *buffer) {
+  gchar c;
+
+  while (true) {
+    c = ej_next_c_inner(buffer);
+    if (c == '\0') { ej_set_error(buffer, "mutiple line comment not close"); return false; }
+    if (c != '*') { continue; }
+    ej_buffer_skip(buffer, 1);
+
+    c = ej_read_c_inner(buffer, 0);
+    if (c == -1) { ej_set_error(buffer, "mutiple line comment not close"); return false; }
+
+    if (c == '/') { ej_buffer_skip(buffer, 1); break; }
+  }
+
+  return true;
+}
+
+static void ej_comment(EJBuffer *buffer) {
+  gchar c;
+
+  c = ej_read_c_inner(buffer, 0);
+  if (c == '/') {
+    c = ej_read_c_inner(buffer, 1);
+
+    if (c == '/') {
+      ej_buffer_skip(buffer, 2);
+      ej_comment_line(buffer);
+
+    } else if (c == '*') {
+      ej_buffer_skip(buffer, 2);
+      ej_comment_multiple(buffer);
+    }
+  } else {
+    return;
+  }
+
+  ej_skip_whitespace(buffer);
 }
 
 const gchar *ej_get_data_type_name(EJ_TYPE type) {
@@ -164,18 +377,52 @@ const gchar *ej_get_data_type_name(EJ_TYPE type) {
   return EJ_TYPE_NAMES[type];
 }
 
+EJBool ej_object_get_value(EJObject *data, gchar *key, EJValue **value) {
+  size_t i;
+  EJObjectPair *pair = NULL;
+
+  for (i = 0; i < data->len; i++) {
+    pair = (EJObjectPair *)data->pdata[i];
+    ej_return_val_if_fail((pair != NULL) && (pair->key != NULL) && (pair->value != NULL), false);
+
+    if (pair->key->type != EJ_STRING) {
+      continue;
+    }
+
+    if (ej_strcmp0((const char *)key, (const char *)pair->key->v.string) == 0) {
+      *value = pair->value;
+      return true;
+    }
+  }
+
+  return false;
+}
+
+void ej_set_errorv(EJBuffer *buffer, gchar *fmt, va_list args) {
+  buffer->error->message = ej_strdup_vprintf(fmt, args);
+  va_end(args);
+}
+
+EJError *ej_get_error(EJBuffer *buffer) {
+  return buffer->error;
+}
+
 void ej_set_error(EJBuffer *buffer, gchar *fmt, ...) {
   va_list args;
 
-  g_assert(buffer != NULL && buffer->error != NULL && "buffer error should not be NULL");
+  ej_assert(buffer != NULL && buffer->error != NULL && "buffer error should not be NULL");
 
   if (buffer->error->message != NULL) {
     return;
   }
 
   va_start(args, fmt);
-  buffer->error->message = g_strdup_vprintf(fmt, args);
+  buffer->error->message = ej_strdup_vprintf(fmt, args);
   va_end(args);
+
+#if EJ_DEBUG
+  printf("Error in <%ld, %ld>: %s", buffer->error->row, buffer->error->col, buffer->error->message);
+#endif 
 }
 
 /* print */
@@ -183,10 +430,10 @@ EJBool ej_print_number(EJNumber *data, gchar **buffer) {
   switch (data->type)
   {
     case EJ_INT:
-      *buffer = g_strdup_printf("%d", data->v.i);
+      *buffer = ej_strdup_printf("%d", data->v.i);
       break;
     case EJ_DOUBLE:
-      *buffer = g_strdup_printf("%lf", data->v.d);
+      *buffer = ej_strdup_printf("%lf", data->v.d);
       break;
     default:
       break;
@@ -196,29 +443,29 @@ EJBool ej_print_number(EJNumber *data, gchar **buffer) {
 }
 
 EJBool ej_print_bool(EJBool data, gchar **buffer) {
-  *buffer = data ? g_strdup("true"): g_strdup("false");
+  *buffer = data ? ej_strdup("true"): ej_strdup("false");
   return true;
 }
 
 EJBool ej_print_array_value(size_t arrlen, size_t index, EJValue *data, gchar **buffer) {
   GString *value;
-  gchar *str;
+  gchar *str = NULL;
 
-  g_assert(index < arrlen);
+  ej_assert(index < arrlen);
 
-  value = g_string_new("");
+  value = ej_string_new("");
   if (ej_print_value(data, &str)) {
-    value = g_string_append(value, str); g_free(str);
+    value = ej_string_append(value, str); ej_free(str);
   }
 
   if (index + 1 == arrlen) {
     *buffer = value->str;
   }
   else {
-    value = g_string_append(value, ", ");
+    value = ej_string_append(value, ",");
     *buffer = value->str;
   }
-  g_string_free(value, false);
+  ej_string_free(value, false);
 
   return true;
 }
@@ -229,66 +476,86 @@ EJBool ej_print_array(EJArray *data, gchar **buffer) {
   size_t i, len;
   if (!data) { return false; }
 
-  value = g_string_new("[");
+  value = ej_string_new("[");
   len = data->len;
   for (i = 0; i < len; i++) {
     ej_print_array_value_inner(len, i, data->pdata[i], &str);
-    value = g_string_append(value, str); g_free(str);
+    value = ej_string_append(value, str); ej_free(str);
   }
-  value = g_string_append(value, "]");
-  *buffer = value->str; g_string_free(value, false);
+  value = ej_string_append(value, "]");
+  *buffer = value->str; ej_string_free(value, false);
 
   return true;
 }
 
-EJBool ej_print_object_pair_prop(EJHash *data, gchar **buffer) {
+EJBool ej_print_object_pair_prop(EJArray *data, gchar **buffer) {
   gchar *key = NULL, *prop = NULL;
   EJObjectPair *op = NULL;
   GString *value;
-  GHashTableIter itr;
   guint size, i;
 
   if (!data) { return false; }
 
-  value = g_string_new("<");
-  g_hash_table_iter_init(&itr, data);
-  size = g_hash_table_size(data);
+  value = ej_string_new("<");
+  size = data->len;
 
-  for(i = 0;g_hash_table_iter_next(&itr, NULL, (gpointer)&op);i++) {
+  for(i = 0; i < data->len;i++) {
+    op = data->pdata[i];
 
     if (ej_print_object_pair(op, &prop)) {
-      value = g_string_append(value, prop);g_free(prop);
+      value = ej_string_append(value, prop);ej_free(prop);
 
       if(i + 1 < size) {
-        value = g_string_append(value, ",");
+        value = ej_string_append(value, ",");
       }
     }
   }
-  value = g_string_append(value, ">");
+  value = ej_string_append(value, ">");
 
-  *buffer = value->str; g_string_free(value, false);
+  *buffer = value->str; ej_string_free(value, false);
 
   return true;
 }
 
 EJBool ej_print_object_pair(EJObjectPair *data, gchar **buffer) {
-  gchar *prop = NULL, *value = NULL;
+  ej_return_val_if_fail(data->key != NULL, false);
 
-  g_assert(data->key != NULL && *data->key != '\0');
+  gchar *prop = NULL, *value = NULL, *key = NULL;
+
+  if (!ej_print_value(data->key, &key)) {
+    goto fail;
+  }
 
   if (!ej_print_object_pair_prop(data->props, &prop)) {
-    prop = g_strdup("");
+    prop = ej_strdup("");
   }
 
   if (!ej_print_value(data->value, &value)) {
-    free(prop);
+    value = ej_strdup("");
+  }
+
+  *buffer = ej_strdup_printf("%s%s:%s", key, prop, value);
+
+  ej_free(key);
+  ej_free(prop);
+  ej_free(value);
+  return true;
+fail:
+  return false;
+}
+
+EJBool ej_print_eobject(EJObject *data, gchar **buffer) {
+  GString *value;
+
+  if (!data) { return false; }
+
+  value = ej_string_new("@");
+  if (!ej_print_object(data, buffer)) {
     return false;
   }
 
-  *buffer = g_strdup_printf("\"%s\"%s:%s", data->key, prop, value);
-
-  g_free(prop);
-  g_free(value);
+  value = ej_string_append(value, *buffer); ej_free(*buffer);
+  *buffer = value->str; ej_string_free(value, false);
 
   return true;
 }
@@ -298,19 +565,19 @@ EJBool ej_print_object(EJObject *data, gchar **buffer) {
 
   if (!data) { return false; }
 
-  value = g_string_new("{");
+  value = ej_string_new("{");
 
   if (data->len > 0) {
-    g_ptr_array_foreach(data, (GFunc)ej_print_object_pair_inner, buffer);
+    ej_ptr_array_foreach(data, (EJFunc)ej_print_object_pair_inner, buffer);
     if(*buffer == NULL) { return false; }
 
-    value = g_string_append(value, *buffer); g_free(*buffer);
-    value = g_string_truncate(value, (value->len-1)); // delete last ','
+    value = ej_string_append(value, *buffer); ej_free(*buffer);
+    value = ej_string_truncate(value, (value->len-1)); // delete last ','
   }
 
-  value = g_string_append(value, "}");
+  value = ej_string_append(value, "}");
 
-  *buffer = value->str; g_string_free(value, false);
+  *buffer = value->str; ej_string_free(value, false);
 
   return true;
 }
@@ -323,11 +590,11 @@ EJBool ej_print_value(EJValue *data, gchar **buffer) {
     case EJ_BOOLEAN:
       return ej_print_bool(data, buffer);
     case EJ_NULL: {
-      *buffer = g_strdup("null");
+      *buffer = ej_strdup("null");
       return true;
     }
     case EJ_STRING: {
-      *buffer = g_strdup_printf("\"%s\"", data->v.string);
+      *buffer = ej_strdup_printf("\"%s\"", data->v.string);
       return true;
     }
     case EJ_NUMBER: {
@@ -336,6 +603,8 @@ EJBool ej_print_value(EJValue *data, gchar **buffer) {
     case EJ_ARRAY: {
       return ej_print_array(data->v.array, buffer);
     }
+    case EJ_EOBJECT:
+      return ej_print_eobject(data->v.object, buffer);
     case EJ_OBJECT: {
       return ej_print_object(data->v.object, buffer);
     }
@@ -357,21 +626,21 @@ static void ej_print_object_pair_inner(EJObjectPair *pair, gpointer user_data) {
 
   udata = (gchar **)user_data;
   if(*udata != NULL) {
-    value = g_string_new(*udata); g_free(*udata);
+    value = ej_string_new(*udata); ej_free(*udata);
   }
   else {
-    value = g_string_new("");
+    value = ej_string_new("");
   }
 
   if(!ej_print_object_pair(pair, &str)) {
     return;
   }
 
-  value = g_string_append(value, str); g_free(str);
-  value = g_string_append(value, ",");
+  value = ej_string_append(value, str); ej_free(str);
+  value = ej_string_append(value, ",");
 
   *udata = (gpointer)value->str;
-  g_string_free(value, false);
+  ej_string_free(value, false);
 }
 
 static void ej_print_array_value_inner(size_t arrlen, size_t index, EJValue *data, gpointer user_data) {
@@ -380,10 +649,12 @@ static void ej_print_array_value_inner(size_t arrlen, size_t index, EJValue *dat
 
 /* parse */
 EJBool ej_parse_bool(EJBuffer *buffer, EJBool *data) {
-  if (ej_valid(buffer, 5) && strncmp(ej_read(buffer, 0), "false", 5) == 0) {
+  ej_return_val_if_fail(data != NULL, false);
+
+  if (ej_token_is(buffer, EJ_TOKEN_FALSE)) {
     *data = false;
   }
-  else if (ej_valid(buffer, 4) && strncmp(ej_read(buffer, 0), "true", 4) == 0) {
+  else if (ej_token_is(buffer, EJ_TOKEN_TRUE)) {
     *data = true;
   }
   else {
@@ -393,35 +664,30 @@ EJBool ej_parse_bool(EJBuffer *buffer, EJBool *data) {
   return true;
 }
 
-EJBool ej_parse_array(EJBuffer *buffer, EJArray **data) {
+static EJBool ej_parse_array_inner(EJBuffer *buffer, EJArray **data) {
   EJArray *arr;
   EJValue *value = NULL;
   size_t i = 0;
-  gchar c;
 
-  if (*ej_read(buffer, 0) != '[') {
-    return false;
-  }
-  EJ_BUFFER_SKIP(buffer, 1);
-  ej_skip_whitespace(buffer);
+  ej_buffer_skip(buffer, 1);
 
-  arr = ej_array_new();
-
-  c = ej_access_c(buffer, 0);
-  if (c == ']') { goto success; }
+  arr = ej_value_array_new();
+  if (ej_ensure_char(buffer, EJ_TOKEN_BKT_END)) { goto success; }
 
   while (true) {
     if (!ej_parse_value(buffer, &value)) {
       goto fail;
     }
-    g_ptr_array_add(arr, (gpointer)value);
+    ej_ptr_array_add(arr, (gpointer)value);
 
-    ej_skip_whitespace(buffer);
-    c = ej_access_c(buffer, 0);
-    if (c == ',') {
-      EJ_BUFFER_SKIP(buffer, 1);
-    }
-    else if (c == ']') {
+    if (ej_ensure_char(buffer, EJ_TOKEN_COMMA)) {
+      ej_buffer_skip(buffer, 1);
+
+      if (ej_ensure_char(buffer, EJ_TOKEN_BKT_END)) {
+        break;
+      }
+    } 
+    else if (ej_token_is(buffer, EJ_TOKEN_BKT_END)) {
       break;
     }
     else {
@@ -430,37 +696,40 @@ EJBool ej_parse_array(EJBuffer *buffer, EJArray **data) {
   }
 
 success:
-  if (*ej_read(buffer, 0) != ']') {
+  if (!ej_token_is(buffer, EJ_TOKEN_BKT_END)) {
     goto fail;
   }
-  EJ_BUFFER_SKIP(buffer, 1);
+  ej_buffer_skip(buffer, 1);
 
   *data = arr;
   return true;
-
 fail:
   ej_set_error(buffer, "Parse array failed");
-  g_ptr_array_unref(arr);
+  ej_free_ptr_array(arr);
   return false;
 }
 
-EJBool ej_parse_string(EJBuffer *buffer, EJString **data) {
+EJBool ej_parse_array(EJBuffer *buffer, EJArray **data) {
+  if (!ej_token_is(buffer, EJ_TOKEN_BKT_START)) {
+    return false;
+  }
+
+  return ej_parse_array_inner(buffer, data);
+}
+
+static EJBool ej_parse_string_inner(EJBuffer *buffer, EJString **data) {
   size_t len = 0;
   gchar c, n;
 
-  if (*ej_read(buffer, 0) != '\"') {
-    return false;
-  }
-  EJ_BUFFER_SKIP(buffer, 1);
+  ej_buffer_skip(buffer, 1);
 
-  for (len = 0; c = ej_access_c(buffer, len); len++) {
-    if (c == -1) {
-      ej_set_error(buffer, "occur buffer end when parse string");
-      return false;
-    }
+  len = 0;
+  while (true) {
+    c = ej_read_c_inner(buffer, (int)len);
+    if (c == '\0') { ej_set_error(buffer, "occur buffer end when parse string"); return false; }
 
     if (c == '\\') {
-      n = ej_access_c(buffer, len + 1);
+      n = ej_read_c(buffer, len + 1);
 
       switch (n)
       {
@@ -490,27 +759,30 @@ EJBool ej_parse_string(EJBuffer *buffer, EJString **data) {
     if (c == '\"' || len + 1 > EJ_STR_MAX) {
       break;
     }
+
+    len++;
   }
 
-  *data = g_strndup(ej_read(buffer, 0), len);
+  *data = (EJString *)ej_strndup(ej_read_inner(buffer, 0), len);
 
-  EJ_BUFFER_SKIP(buffer, len + 1);
+  ej_buffer_skip(buffer, len + 1);
   return true;
 }
 
-EJBool ej_parse_key(EJBuffer *buffer, EJString **data) {
-  if (!EJ_SKIP_AND_VALID(buffer)) { return false; }
+EJBool ej_parse_string(EJBuffer *buffer, EJString **data) {
+  if (!ej_token_is(buffer, EJ_TOKEN_QMARK)) {
+    return false;
+  }
 
-  EJString *key = NULL;
+  return ej_parse_string_inner(buffer, data);
+}
+
+EJBool ej_parse_key_without_quote(EJBuffer *buffer, EJString **data) {
   gchar c;
   size_t pos = 0;
 
-  if (ej_parse_string(buffer, data)) {
-    return true;
-  }
-
-  for (pos = 0; c = ej_access_c(buffer, pos); pos++) {
-    if (c == -1 || c == ' ' || c == '<' || c == '>' || c == ':' || c == '\"' || c == '\n') {
+  for (pos = 0; c = ej_read_c(buffer, pos); pos++) {
+    if (!ej_ascii_isalnum(c) && c != '-' && c != '_') {
       if (pos == 0) {
         ej_set_error(buffer, "Key length cannot be zero.");
         return false;
@@ -523,262 +795,341 @@ EJBool ej_parse_key(EJBuffer *buffer, EJString **data) {
       return false;
     }
   }
+  if (pos == 0) { return false; }
 
-  key = g_strndup(ej_read(buffer, 0), pos);
-  EJ_BUFFER_SKIP(buffer, pos);
+  *data = ej_strndup(ej_read_inner(buffer, 0), pos);
+  ej_buffer_skip(buffer, pos);
 
-  if (!ej_valid(buffer, 0)) {
-    ej_set_error(buffer, "Occour buffer end when parse key.");
-    g_free(key);
-    return false;
-  }
-
-  *data = key;
   return true;
 }
 
-EJBool ej_parse_number(EJBuffer *buffer, EJNumber **data) {
-  EJNumber *num = ej_new0(EJNumber, 1);
+EJBool ej_parse_key(EJBuffer *buffer, EJValue **data) {
+  if (!ej_skip_whitespace(buffer)) { return false; }
+  if (ej_token_is(buffer, EJ_TOKEN_CUR_END)) { return false; }
+
+  EJValue *kv;
+
+  kv = ej_new0(EJValue, 1);
+  if (*ej_read_inner(buffer, 0) == '@') {
+    ej_buffer_skip(buffer, 1);
+
+    kv->type = EJ_EOBJECT;
+    if (ej_parse_object(buffer, &kv->v.object)) {
+      goto success;
+    }
+  }
+
+  if (ej_parse_string(buffer, &kv->v.string)) {
+    kv->type = EJ_STRING;
+    goto success;
+  }
+
+  kv->type = EJ_STRING;
+  if (!ej_parse_key_without_quote(buffer, &kv->v.string)) {
+    goto fail;
+  }
+
+  if (!ej_valid(buffer, 1)) {
+    ej_set_error(buffer, "Occour buffer end when parse key.");
+    goto fail;
+  }
+
+success:
+  *data = kv;
+  return true;
+fail:
+  ej_free_value(kv);
+  return false;
+}
+
+static EJBool ej_parse_number_inner(EJBuffer *buffer, EJNumber **data) {
+  EJNumber *num;
   size_t len;
   gchar c;
   gchar *nstr;
 
   size_t type = EJ_INT;
-  for (len = 0; c = ej_access_c(buffer, len); len++) {
+  for (len = 0; c = ej_read_c(buffer, len); len++) {
     if (c == '.') {
       if (type == EJ_DOUBLE) { goto fail; }
       type = EJ_DOUBLE;
     }
-    else if ((c >= '0' && c <= '9')
+    else if (ej_ascii_isdigit(c)
       || c == '+'
       || c == '-'
       || c == 'E'
       || c == 'e') {
-
     }
     else {
       break;
     }
   }
-  nstr = g_strndup(ej_read(buffer, 0), len);
+  if (len == 0) { ej_set_error(buffer, "Zero length of number"); return false; };
+
+  num = ej_new0(EJNumber, 1);
+  nstr = ej_strndup(ej_read_inner(buffer, 0), len);
 
   if (type == EJ_DOUBLE) {
-    num->v.d = g_ascii_strtod(nstr, NULL);
+    num->v.d = ej_ascii_strtod(nstr, NULL);
   }
-  else if (num->type == EJ_INT) {
-    num->v.i = (int)g_ascii_strtoll(nstr, NULL, 10);
+  else if (type == EJ_INT) {
+    num->v.i = (int)ej_ascii_strtoll(nstr, NULL, 10);
   }
-  g_free(nstr);
-
-  EJ_BUFFER_SKIP(buffer, len);
+  ej_free(nstr);
+  ej_buffer_skip(buffer, len);
 
   num->type = type;
   *data = num;
   return true;
-
 fail:
   ej_set_error(buffer, "Parse number failed");
-  g_free(num);
   return false;
 }
 
-EJBool ej_parse_object_props(EJBuffer *buffer, EJObject *object, EJHash **data) {
-  EJHash *props = NULL, *hook = buffer->objectIDs;
+EJBool ej_parse_number(EJBuffer *buffer, EJNumber **data) {
+  if (!ej_token_is(buffer, EJ_TOKEN_HYPHEN) && !ej_ascii_isdigit(*ej_read_inner(buffer, 0))) {
+    return false;
+  }
+
+  return ej_parse_number_inner(buffer, data);
+}
+
+EJBool ej_parse_object_props(EJBuffer *buffer, EJObject *object, EJArray **data) {
+  EJArray *props = NULL;
   EJObjectPair *pair = NULL;
-  gchar c;
 
-  g_assert(ej_valid(buffer, 0) && ((*ej_read(buffer, 0) == '<')) && (object != NULL));
-  EJ_BUFFER_SKIP(buffer, 1);
-  if (!EJ_SKIP_AND_VALID(buffer)) { return false; }
+  ej_assert(ej_token_is(buffer, EJ_TOKEN_LT) && (object != NULL));
+  ej_buffer_skip(buffer, 1);
+  if (!ej_skip_whitespace(buffer)) { return false; }
 
-  props = ej_hash_new();
-  if (*ej_read(buffer, 0) == '>') {
+  props = ej_pair_array_new();
+  if (ej_ensure_char(buffer, EJ_TOKEN_GT)) {
     goto success;
   }
 
-  while (c = ej_access_c(buffer, 0)) {
-    if(c == -1) { goto fail; }
+  while (true) {
+    if (!ej_valid(buffer, 1)) {
+      goto fail;
+    }
 
     pair = ej_object_pair_new();
     /* parse key */
     if (!ej_parse_key(buffer, &pair->key)) {
+      ej_free_object_pair(pair);
       goto fail;
     }
 
-    if (*ej_read(buffer, 0) == '<') {
-      if (!ej_parse_object_props(buffer, object, &pair->props)) {
+    if (!ej_skip_whitespace(buffer)) { goto fail; }
+
+    if (ej_token_is(buffer, EJ_TOKEN_LT)) {
+      if (!ej_parse_object_props(buffer, props, &pair->props)) {
+        ej_free_object_pair(pair);
+        ej_set_error(buffer, "Parse property failed");
         goto fail;
       }
     }
 
-    if (strncmp(pair->key, "id", 2) == 0) {
-      if (hook != NULL) {
-        g_hash_table_insert(hook, pair->key, object);
-      }
-    }
-
-    if (!EJ_ENSURE_CHAR(buffer, ':')) {
+    if (!ej_token_is(buffer, EJ_TOKEN_COLON)) {
+      ej_set_error(buffer, "Missing ':' before parse key property value");
+      ej_free_object_pair(pair);
       goto fail;
     }
-    EJ_BUFFER_SKIP(buffer, 1);
+    ej_buffer_skip(buffer, 1);
 
     /* parse value */
     if (!ej_parse_value(buffer, &pair->value)) {
+      ej_set_error(buffer, "Parse property value failed");
+      ej_free_object_pair(pair);
       goto fail;
     }
+    ej_ptr_array_add(props, pair);
 
-    if (!EJ_SKIP_AND_VALID(buffer)) {
+    if (ej_token_is(buffer, EJ_TOKEN_COMMA)) {
+      ej_buffer_skip(buffer, 1);
+      if (ej_ensure_char(buffer, EJ_TOKEN_GT)) {
+        break;
+      }
+    } else if (ej_token_is(buffer, EJ_TOKEN_GT)) {
+      break;
+
+    } else {
       goto fail;
     }
-
-    g_hash_table_insert(props, pair->key, pair);
-
-    if(*ej_read(buffer, 0) != ',') { break; }
-    EJ_BUFFER_SKIP(buffer, 1);
   }
 
 success:
-  if (*ej_read(buffer, 0) != '>') {
+  if (!ej_token_is(buffer, EJ_TOKEN_GT)) {
     goto fail;
   }
-  EJ_BUFFER_SKIP(buffer, 1);
+  ej_buffer_skip(buffer, 1);
 
   *data = props;
   return true;
 
 fail:
-  if (pair != NULL) {
-    ej_free_object_pair(pair);
+  ej_free_ptr_array(props);
+  return false;
+}
+
+EJBool ej_parse_object_pair(EJBuffer *buffer, EJObject *obj, EJObjectPair **data) {
+  EJObjectPair *pair;
+
+  if (!ej_skip_whitespace(buffer)) { return false; }
+
+  pair = ej_object_pair_new();
+  /* parse key */
+  if (!ej_parse_key(buffer, &pair->key)) {
+    goto fail;
   }
 
-  g_hash_table_unref(props);
+  if (ej_ensure_char(buffer, EJ_TOKEN_LT)) {
+    if (!ej_parse_object_props(buffer, obj, &pair->props)) {
+      goto fail;
+    }
+  }
+
+  if (!ej_ensure_char(buffer, EJ_TOKEN_COLON)) {
+    ej_set_error(buffer, "Missing ':' before parse object value");
+    goto fail;
+  }
+  ej_buffer_skip(buffer, 1);
+
+  /* parse value */
+  if (!ej_parse_value(buffer, &pair->value)) {
+    goto fail;
+  }
+
+  *data = pair;
+  return true;
+fail:
+  ej_free_object_pair(pair);
+  return false;
+}
+
+static EJBool ej_parse_object_inner(EJBuffer *buffer, EJObject **data) {
+  EJObject *obj = NULL;
+  EJObjectPair *pair = NULL;
+
+  ej_buffer_skip(buffer, 1);
+  if (!ej_skip_whitespace(buffer)) { return false; }
+
+  obj = ej_pair_array_new();
+
+  if (ej_token_is(buffer, EJ_TOKEN_CUR_END)) {
+    goto success;
+  }
+
+  while (true) {
+    if (!ej_parse_object_pair(buffer, obj, &pair)) {
+      goto fail;
+    }
+
+    if (!ej_skip_whitespace(buffer)) {
+      ej_free_object_pair(pair);
+      goto fail;
+    }
+
+    ej_ptr_array_add(obj, pair);
+    if (ej_token_is(buffer, EJ_TOKEN_COMMA)) {
+      ej_buffer_skip(buffer, 1);
+
+      if (!ej_skip_whitespace(buffer)) { goto fail; }
+      if (ej_token_is(buffer, EJ_TOKEN_CUR_END)) {
+        break;
+      }
+    } 
+    else if (ej_token_is(buffer, EJ_TOKEN_CUR_END)) {
+      break;
+
+    } else {
+      ej_set_error(buffer, "Missing ',' before when parse object");
+      goto fail;
+    }
+  }
+
+success:
+  if (!ej_token_is(buffer, EJ_TOKEN_CUR_END)) {
+    ej_set_error(buffer, "Not end with } when parse object");
+    goto fail;
+  }
+  ej_buffer_skip(buffer, 1);
+
+  *data = obj;
+  return true;
+fail:
+  ej_free_ptr_array(obj);
+
   return false;
 }
 
 EJBool ej_parse_object(EJBuffer *buffer, EJObject **data) {
-  EJObject *obj = NULL;
-  EJObjectPair *pair = NULL;
-  gchar c;
-
-  g_assert(ej_valid(buffer, 0) && ((*ej_read(buffer, 0) == '{')));
-  EJ_BUFFER_SKIP(buffer, 1);
-  if (!EJ_SKIP_AND_VALID(buffer)) { return false; }
-
-  obj = ej_array_new();
-  if (*ej_read(buffer, 0) == '}') {
-    goto success;
+  if (!ej_token_is(buffer, EJ_TOKEN_CUR_START)) {
+    return false;
   }
 
-  while(c = ej_access_c(buffer, 0)) {
-    if(c == -1) { goto fail; }
-    pair = ej_object_pair_new();
-    /* parse key */
-    if (!ej_parse_key(buffer, &pair->key)) {
-      goto fail;
-    }
-
-    if (*ej_read(buffer, 0) == '<') {
-      if (!ej_parse_object_props(buffer, obj, &pair->props)) {
-        goto fail;
-      }
-    }
-
-    if (!EJ_ENSURE_CHAR(buffer, ':')) {
-      goto fail;
-    }
-    EJ_BUFFER_SKIP(buffer, 1);
-
-    /* parse value */
-    if (!ej_parse_value(buffer, &pair->value)) {
-      goto fail;
-    }
-
-    if (!EJ_SKIP_AND_VALID(buffer)) {
-      goto fail;
-    }
-
-    g_ptr_array_add(obj, pair);
-
-    if(*ej_read(buffer, 0) != ',') {
-      if(*ej_read(buffer, 0) != '}') {
-        ej_set_error(buffer, "Missing , when parse object");
-        goto fail;
-      }
-      break;
-    }
-    EJ_BUFFER_SKIP(buffer, 1);
-  }
-
-success:
-  if (*ej_read(buffer, 0) != '}') {
-    ej_set_error(buffer, "Not end with } when parse object");
-    goto fail;
-  }
-  EJ_BUFFER_SKIP(buffer, 1);
-
-  *data = obj;
-  return true;
-
-fail:
-  if (pair != NULL) {
-    ej_free_object_pair(pair);
-  }
-
-  g_ptr_array_unref(obj);
-  return false;
+  return ej_parse_object_inner(buffer, data);
 }
 
 EJBool ej_parse_value(EJBuffer *buffer, EJValue **data) {
   EJValue *value = ej_new0(EJValue, 1);
 
   value->type = EJ_RAW;
-  g_assert(data != NULL && buffer != NULL && buffer->content != NULL);
+  ej_assert(data != NULL && buffer != NULL && buffer->content != NULL);
 
-  if (!EJ_SKIP_AND_VALID(buffer)) { return false; }
+  if (!ej_skip_whitespace(buffer)) { return false; }
 
   if (ej_parse_bool(buffer, &value->v.bvalue)) {
     *data = value;
     value->type = EJ_BOOLEAN;
-    EJ_BUFFER_SKIP(buffer, (value->v.bvalue ? 4 : 5));
+    ej_buffer_skip(buffer, (value->v.bvalue ? 4 : 5));
     return true;
   }
-  else if (ej_valid(buffer, 4) && strncmp(ej_read(buffer, 0), "null", 4) == 0) {
+  else if (ej_token_is(buffer, EJ_TOKEN_NULL)) {
     *data = value;
     value->type = EJ_NULL;
-    EJ_BUFFER_SKIP(buffer, 4);
+    ej_buffer_skip(buffer, 4);
     return true;
   }
 
-  if (ej_valid(buffer, 0)) {
-    if (*ej_read(buffer, 0) == '-' || (*ej_read(buffer, 0) >= '0' && *ej_read(buffer, 0) <= '9') ) {
-      value->type = EJ_NUMBER;
-      if (!ej_parse_number(buffer, &value->v.number)) {
-        goto fail;
-      }
-    }
-    else if (*ej_read(buffer, 0) == '\"') {
-      value->type = EJ_STRING;
-      if (!ej_parse_string(buffer, &value->v.string)) {
-        goto fail;
-      }
-    }
-    else if (*ej_read(buffer, 0) == '[') {
-      value->type = EJ_ARRAY;
-      if (!ej_parse_array(buffer, &value->v.array)) {
-        goto fail;
-      }
-    }
-    else if (*ej_read(buffer, 0) == '{') {
-      value->type = EJ_OBJECT;
-      if (!ej_parse_object(buffer, &value->v.object)) {
-        goto fail;
-      }
-    }
-    else {
+  if (ej_token_is(buffer, EJ_TOKEN_HYPHEN) || ej_ascii_isdigit(*ej_read_inner(buffer, 0))) {
+    value->type = EJ_NUMBER;
+    if (!ej_parse_number_inner(buffer, &value->v.number)) {
       goto fail;
     }
   }
+  else if (ej_token_is(buffer, EJ_TOKEN_QMARK)) {
+    value->type = EJ_STRING;
+    if (!ej_parse_string_inner(buffer, &value->v.string)) {
+      goto fail;
+    }
+  }
+  else if (ej_token_is(buffer, EJ_TOKEN_BKT_START)) {
+    value->type = EJ_ARRAY;
+    if (!ej_parse_array_inner(buffer, &value->v.array)) {
+      goto fail;
+    }
+  }
+  else if (ej_token_is(buffer, EJ_TOKEN_CUR_START)) {
+    value->type = EJ_OBJECT;
+    if (!ej_parse_object_inner(buffer, &value->v.object)) {
+      goto fail;
+    }
+  }
+  else if(ej_token_is(buffer, EJ_TOKEN_AT)) {
+    value->type = EJ_EOBJECT;
 
+    ej_buffer_skip(buffer, 1);
+    ej_skip_whitespace(buffer);
+
+    if (!ej_parse_object_inner(buffer, &value->v.object)) {
+      goto fail;
+    }
+  }
+  else {
+    value->type = EJ_INVALID;
+    ej_set_error(buffer, "Value should starts with '[' or '{' or '\"' or boolean");
+    goto fail;
+  }
   *data = value;
   return true;
 fail:
@@ -787,39 +1138,39 @@ fail:
   return false;
 }
 
-static EJBool skip_utf8_bom(EJBuffer *const buffer) {
-  if ((buffer == NULL) || (buffer->content == NULL) || (buffer->offset != 0)) {
-    return false;
-  }
+EJBuffer *ej_buffer_mode_new(const gchar *content, size_t len, EJ_MODE_TYPE mode) {
+  ej_return_val_if_fail(content != NULL, NULL);
 
-  if (ej_valid(buffer, 4) && (strncmp(ej_read(buffer, 0), "\xEF\xBB\xBF", 3) == 0)) {
-    EJ_BUFFER_SKIP(buffer, 3);
-  }
+  EJBuffer *buffer = ej_new0(EJBuffer, 1);
 
-  return true;
+  buffer->content = content;
+  buffer->length = len;
+  buffer->offset = 0;
+  buffer->error = ej_error_new();
+  buffer->mode = mode;
+
+  return buffer;
+}
+
+EJBuffer *ej_buffer_new(const gchar *content, size_t len) {
+  return ej_buffer_mode_new(content, len, EJ_MODE_RECURSIVE);
 }
 
 EJValue *ej_parse(EJError **error, const gchar *content) {
-  EJBuffer buffer = { NULL, 0, 0, NULL, NULL };
-  gchar *str1;
+  EJBuffer *buffer;
   EJValue *value = NULL;
 
-  buffer.content = (gchar *)content;
-  buffer.length = ej_strlen((gchar *)content, EJ_STR_MAX);
-  buffer.offset = 0;
-  buffer.objectIDs = g_hash_table_new_full(g_str_hash, g_str_equal, NULL, NULL);
-  buffer.error = ej_new0(EJError, 1);
-  buffer.error->row = 1;
-  buffer.error->col = 1;
+  buffer = ej_buffer_new(content, ej_strlen((const gchar *)content));
+  ej_skip_utf8_bom(buffer);
 
-  skip_utf8_bom(&buffer);
-
-  if (!ej_parse_value(&buffer, &value)) {
-    g_warning("parse buffer at <%ld,%ld>:%s", buffer.error->row, buffer.error->col, buffer.error->message);
-    g_hash_table_unref(buffer.objectIDs);
-    return NULL;
+  if (!ej_parse_value(buffer, &value)) {
+    *error = ej_get_error(buffer);
+    goto fail;
   }
-
-  g_debug("%s", "parse success");
+  ej_free_buffer(buffer);
   return value;
+
+fail:
+    ej_free_buffer(buffer);
+    return NULL;
 }
