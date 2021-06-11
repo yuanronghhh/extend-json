@@ -9,7 +9,6 @@ set(SRC
 )
 include_directories("${INC}")
 add_library(extend-json "${SRC}")
-ADD_DEFINITIONS(-fPIC)
 set_property(TARGET extend-json PROPERTY FOLDER ExtendJsonProject)
 
 target_link_libraries(extend-json
