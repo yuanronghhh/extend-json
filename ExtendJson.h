@@ -7,9 +7,17 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <gmodule.h>
 
 G_BEGIN_DECLS
 
+#if _MSC_VER
+  #define EB_STDCALL __stdcall
+#else
+  #define EB_STDCALL
+#endif
+
+#define EJ_MODULE_EXPORT(type) G_MODULE_EXPORT type EB_STDCALL
 #define EJ_PAIR_K(pair) (pair->key)
 
 #define ej_free_ptr_array(obj) g_ptr_array_unref(obj)
@@ -66,7 +74,6 @@ enum _EJ_NUMBER_TYPE {
 
 enum _EJ_MODE_TYPE {
   EJ_MODE_RECURSIVE,
-  EJ_MODE_STEP,
 };
 
 enum _EJ_TYPE {
@@ -105,7 +112,7 @@ enum _EJ_TOKEN_TYPE {
 struct _EJError {
   size_t row;
   size_t col;
-  gchar *message;
+  EJString *message;
 };
 
 struct _EJObjectPair {
@@ -137,59 +144,57 @@ struct _EJValue {
 
 struct _EJLString {
   size_t len;
-  gchar *value;
+  EJString *value;
 };
 
-void* ej_malloc0(size_t size);
-void ej_free_value(EJValue *data);
-void ej_free_error(EJError *error);
-void ej_free_buffer(EJBuffer *buffer);
+EJ_MODULE_EXPORT(void*)  ej_malloc0(size_t size);
+EJ_MODULE_EXPORT(void) ej_free_value(EJValue *data);
+EJ_MODULE_EXPORT(void) ej_free_error(EJError *error);
+EJ_MODULE_EXPORT(void) ej_free_buffer(EJBuffer *buffer);
 
-const gchar *ej_get_data_type_name(EJ_TYPE type);
-EJBool ej_object_get_value(EJObject *data, gchar *name, EJValue **value);
+EJ_MODULE_EXPORT(const EJString *) ej_get_data_type_name(EJ_TYPE type);
+EJ_MODULE_EXPORT(EJBool) ej_object_get_value(EJObject *data, EJString *name, EJValue **value);
 
 /* reader */
-EJBool ej_valid(EJBuffer *buffer, int pos);
-gchar *ej_read(EJBuffer *buffer, int pos);
-gchar ej_read_c(EJBuffer *buffer, int pos);
-gchar ej_next_c(EJBuffer *buffer);
-void ej_skip_line(EJBuffer *buffer, int cols, int rows);
-EJBool ej_skip_whitespace(EJBuffer *buffer);
-EJBool ej_skip_utf8_bom(EJBuffer *buffer);
-void ej_buffer_skip(EJBuffer *buffer, int pos);
-EJBool ej_ensure_char(EJBuffer *buffer, EJ_TOKEN_TYPE ch);
+EJ_MODULE_EXPORT(EJBool) ej_valid(EJBuffer *buffer, int pos);
+EJ_MODULE_EXPORT(EJString*) ej_read(EJBuffer *buffer, int pos);
+EJ_MODULE_EXPORT(EJString) ej_read_c(EJBuffer *buffer, int pos);
+EJ_MODULE_EXPORT(EJString) ej_next_c(EJBuffer *buffer);
+EJ_MODULE_EXPORT(void) ej_skip_line(EJBuffer *buffer, int cols, int rows);
+EJ_MODULE_EXPORT(EJBool) ej_skip_whitespace(EJBuffer *buffer);
+EJ_MODULE_EXPORT(EJBool) ej_skip_utf8_bom(EJBuffer *buffer);
+EJ_MODULE_EXPORT(void) ej_buffer_skip(EJBuffer *buffer, int pos);
+EJ_MODULE_EXPORT(EJBool) ej_ensure_char(EJBuffer *buffer, EJ_TOKEN_TYPE ch);
 
-EJBool ej_parse_bool(EJBuffer *buffer, EJBool *data);
-EJBool ej_parse_array(EJBuffer *buffer, EJArray **data);
-EJBool ej_parse_string(EJBuffer *buffer, EJString **data);
-EJBool ej_parse_key_without_quote(EJBuffer *buffer, EJString **data);
-EJBool ej_parse_key(EJBuffer *buffer, EJValue **data);
-EJBool ej_parse_number(EJBuffer *buffer, EJNumber **data);
-EJBool ej_parse_object_pair(EJBuffer *buffer, EJObject *obj, EJObjectPair **data);
-EJBool ej_parse_object_props(EJBuffer *buffer, EJObject *object, EJArray **data);
-EJBool ej_parse_object(EJBuffer *buffer, EJObject **data);
-EJBool ej_parse_value(EJBuffer *buffer, EJValue **data);
-void ej_set_error(EJBuffer *buffer, gchar *fmt, ...);
-EJError *ej_get_error(EJBuffer *buffer);
+EJ_MODULE_EXPORT(EJBool) ej_parse_bool(EJBuffer *buffer, EJBool *data);
+EJ_MODULE_EXPORT(EJBool) ej_parse_array(EJBuffer *buffer, EJArray **data);
+EJ_MODULE_EXPORT(EJBool) ej_parse_string(EJBuffer *buffer, EJString **data);
+EJ_MODULE_EXPORT(EJBool) ej_parse_key_without_quote(EJBuffer *buffer, EJString **data);
+EJ_MODULE_EXPORT(EJBool) ej_parse_key(EJBuffer *buffer, EJValue **data);
+EJ_MODULE_EXPORT(EJBool) ej_parse_number(EJBuffer *buffer, EJNumber **data);
+EJ_MODULE_EXPORT(EJBool) ej_parse_object_pair(EJBuffer *buffer, EJObject *obj, EJObjectPair **data);
+EJ_MODULE_EXPORT(EJBool) ej_parse_object_props(EJBuffer *buffer, EJObject *object, EJArray **data);
+EJ_MODULE_EXPORT(EJBool) ej_parse_object(EJBuffer *buffer, EJObject **data);
+EJ_MODULE_EXPORT(EJBool) ej_parse_value(EJBuffer *buffer, EJValue **data);
+EJ_MODULE_EXPORT(void) ej_set_error(EJBuffer *buffer, EJString *fmt, ...);
+EJ_MODULE_EXPORT(EJError*) ej_get_error(EJBuffer *buffer);
 
-EJBuffer *ej_buffer_new(const gchar *content, size_t len);
-EJBuffer *ej_buffer_mode_new(const gchar *content, size_t len, EJ_MODE_TYPE mode);
-EJArray *ej_value_array_new();
-EJArray *ej_pair_array_new();
-EJObjectPair *ej_object_pair_new();
+EJ_MODULE_EXPORT(EJBuffer*) ej_buffer_new(const EJString *content, size_t len);
+EJ_MODULE_EXPORT(EJBuffer*) ej_buffer_mode_new(const EJString *content, size_t len, EJ_MODE_TYPE mode);
+EJ_MODULE_EXPORT(EJArray*) ej_value_array_new();
+EJ_MODULE_EXPORT(EJArray*) ej_pair_array_new();
+EJ_MODULE_EXPORT(EJObjectPair*) ej_object_pair_new();
 
-EJValue *ej_parse(EJError **error, const gchar *content);
+EJ_MODULE_EXPORT(EJValue*) ej_parse(EJError **error, const EJString *content);
 
-EJBool ej_print_number(EJNumber *data, gchar **buffer);
-EJBool ej_print_bool(EJBool data, gchar **buffer);
-EJBool ej_print_array_value(size_t arrlen, size_t index, EJValue *data, gchar **buffer);
-EJBool ej_print_array(EJArray *data, gchar **buffer);
-EJBool ej_print_object_pair_prop(EJArray *data, gchar **buffer);
-EJBool ej_print_object_pair(EJObjectPair *data, gchar **buffer);
-EJBool ej_print_object(EJObject *data, gchar **buffer);
-EJBool ej_print_value(EJValue *data, gchar **buffer);
-
-EJBool ej_token_ensure(EJBuffer *buffer, EJ_TOKEN_TYPE etype);
+EJ_MODULE_EXPORT(EJBool) ej_print_number(EJNumber *data, EJString **buffer);
+EJ_MODULE_EXPORT(EJBool) ej_print_bool(EJBool data, EJString **buffer);
+EJ_MODULE_EXPORT(EJBool) ej_print_array_value(size_t arrlen, size_t index, EJValue *data, EJString **buffer);
+EJ_MODULE_EXPORT(EJBool) ej_print_array(EJArray *data, EJString **buffer);
+EJ_MODULE_EXPORT(EJBool) ej_print_object_pair_prop(EJArray *data, EJString **buffer);
+EJ_MODULE_EXPORT(EJBool) ej_print_object_pair(EJObjectPair *data, EJString **buffer);
+EJ_MODULE_EXPORT(EJBool) ej_print_object(EJObject *data, EJString **buffer);
+EJ_MODULE_EXPORT(EJBool) ej_print_value(EJValue *data, EJString **buffer);
 
 G_END_DECLS
 

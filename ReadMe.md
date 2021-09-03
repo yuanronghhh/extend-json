@@ -8,7 +8,7 @@ a simple extend json library for tree data.
 ## example
 
 A tree structure in standard json like:
-```json
+```text
 {
   "layout": {
     "properties":[{ "key1": "layoutvalue", "key2": []}],
@@ -23,7 +23,7 @@ A tree structure in standard json like:
 
 but now you can use like this:
 
-```json
+```text
 {
   layout<key1: "layoutvalue", key2:[]>: {
     child1<childKey1: "childValue1">: []
@@ -32,7 +32,7 @@ but now you can use like this:
 ```
 
 ### support @ prefix for extend
-```json
+```text
 {
   layout<key1: "layoutvalue", key2:[]>: {
     child1<@{bind:"click"}: "click_handler">: @{bind: "value2"}

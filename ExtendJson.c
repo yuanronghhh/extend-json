@@ -1,19 +1,19 @@
 #include "ExtendJson.h"
 
 #define EJ_DEBUG false
-#define EJ_LSTR(str) {sizeof(str) - 1, (gchar *)str}
+#define EJ_LSTR(str) {sizeof(str) - 1, (EJString *)str}
 #define EJ_STR_MAX (INT_MAX - 2)
 #define ej_new0(struct_type, n_structs)  ej_malloc0(sizeof(struct_type) * n_structs)
 
 struct _EJBuffer {
-  const gchar *content;
+  const EJString *content;
   size_t length;
   size_t offset;
   EJError *error;
   EJ_MODE_TYPE mode;
 };
 
-static const gchar* EJ_TYPE_NAMES[EJ_RAW] = {
+static const EJString* EJ_TYPE_NAMES[EJ_RAW] = {
   "Invalid", "Boolean", "String", "Array",
   "Number", "Object", "EObject", "Null"
   "Raw"
@@ -46,7 +46,7 @@ static inline void ej_assert_value(EJValue *data) {
   ej_assert(data->type < EJ_RAW && data->type >= EJ_INVALID);
 }
 
-void* ej_malloc0(size_t size) {
+EJ_MODULE_EXPORT(void*) ej_malloc0(size_t size) {
   void* pt = g_malloc0(size);
 
   if (!pt) {
@@ -56,7 +56,7 @@ void* ej_malloc0(size_t size) {
   return pt;
 }
 
-static size_t ej_strlen(const gchar *s) {
+static size_t ej_strlen(const EJString *s) {
   size_t len;
 
   for (len = 0; len < EJ_STR_MAX; len++, s++) {
@@ -83,7 +83,7 @@ void ej_free_number(EJNumber *data) {
   ej_free(data);
 }
 
-void ej_free_value(EJValue *data) {
+EJ_MODULE_EXPORT(void) ej_free_value(EJValue *data) {
   ej_assert_value(data);
 
   if(data->v.object != NULL) {
@@ -137,32 +137,32 @@ void ej_free_object_pair(EJObjectPair *data) {
   ej_free(data);
 }
 
-void ej_free_error(EJError *error) {
+EJ_MODULE_EXPORT(void) ej_free_error(EJError *error) {
   if (error != NULL) {
     ej_free(error->message);
     ej_free(error);
   }
 }
 
-void ej_free_buffer(EJBuffer *buffer) {
+EJ_MODULE_EXPORT(void) ej_free_buffer(EJBuffer *buffer) {
   if(buffer->error->message == NULL) {
     ej_free(buffer->error);
   }
   ej_free(buffer);
 }
 
-EJObjectPair *ej_object_pair_new() {
+EJ_MODULE_EXPORT(EJObjectPair*) ej_object_pair_new() {
   EJObjectPair *pair = ej_new0(EJObjectPair, 1);
 
   return pair;
 }
 
-EJArray *ej_value_array_new() {
+EJ_MODULE_EXPORT(EJArray*) ej_value_array_new() {
   EJArray *arr = ej_ptr_array_new_with_func(ej_free_value);
   return arr;
 }
 
-EJArray *ej_pair_array_new() {
+EJ_MODULE_EXPORT(EJArray*) ej_pair_array_new() {
   EJArray *arr = ej_ptr_array_new_with_func(ej_free_object_pair);
   return arr;
 }
@@ -177,7 +177,7 @@ EJError *ej_error_new() {
 }
 
 /* reader */
-EJBool ej_valid(EJBuffer *buffer, int pos) {
+EJ_MODULE_EXPORT(EJBool) ej_valid(EJBuffer *buffer, int pos) {
   if (!buffer || ((buffer->offset + pos) < 0) || ((buffer->offset + pos) > buffer->length)) {
     return false;
   }
@@ -185,11 +185,11 @@ EJBool ej_valid(EJBuffer *buffer, int pos) {
   return true;
 }
 
-static gchar *ej_read_inner(EJBuffer *buffer, int pos) {
+static EJString *ej_read_inner(EJBuffer *buffer, int pos) {
   return (char *)(buffer->content + buffer->offset + pos);
 }
 
-gchar *ej_read(EJBuffer *buffer, int pos) {
+EJ_MODULE_EXPORT(EJString*) ej_read(EJBuffer *buffer, int pos) {
   if(!ej_valid(buffer, 0)) {
     return '\0';
   }
@@ -197,7 +197,7 @@ gchar *ej_read(EJBuffer *buffer, int pos) {
   return ej_read_inner(buffer, pos);
 }
 
-static const gchar ej_read_c_inner(EJBuffer *buffer, int pos) {
+static const EJString ej_read_c_inner(EJBuffer *buffer, int pos) {
   if (!ej_valid(buffer, pos)) {
     return '\0';
   }
@@ -216,7 +216,7 @@ EJBool ej_token_is(EJBuffer *buffer, EJ_TOKEN_TYPE etype) {
   return bl;
 }
 
-EJBool ej_ensure_char(EJBuffer *buffer, EJ_TOKEN_TYPE ch) {
+EJ_MODULE_EXPORT(EJBool) ej_ensure_char(EJBuffer *buffer, EJ_TOKEN_TYPE ch) {
   if (!ej_skip_whitespace(buffer)) {
     return false;
   }
@@ -228,8 +228,8 @@ EJBool ej_ensure_char(EJBuffer *buffer, EJ_TOKEN_TYPE ch) {
   return false;
 }
 
-gchar ej_read_c(EJBuffer *buffer, int pos) {
-  gchar c;
+EJ_MODULE_EXPORT(EJString) ej_read_c(EJBuffer *buffer, int pos) {
+  EJString c;
   if (!ej_valid(buffer, pos)) {
     return '\0';
   }
@@ -243,7 +243,7 @@ gchar ej_read_c(EJBuffer *buffer, int pos) {
   return c;
 }
 
-void ej_skip_c(EJBuffer *buffer, gchar c) {
+void ej_skip_c(EJBuffer *buffer, EJString c) {
   if (!ej_valid(buffer, 1)) {
     return;
   }
@@ -256,7 +256,7 @@ void ej_skip_c(EJBuffer *buffer, gchar c) {
   }
 }
 
-void ej_skip_line(EJBuffer *buffer, int cols, int rows) {
+EJ_MODULE_EXPORT(void) ej_skip_line(EJBuffer *buffer, int cols, int rows) {
   if (rows == 0) {
     buffer->error->col += cols;
   } else {
@@ -270,14 +270,14 @@ void ej_skip_line(EJBuffer *buffer, int cols, int rows) {
   buffer->offset = buffer->offset + cols;
 }
 
-void ej_buffer_skip(EJBuffer *buffer, int pos) {
+EJ_MODULE_EXPORT(void) ej_buffer_skip(EJBuffer *buffer, int pos) {
   if (buffer == NULL || pos == 0) { return; }
 
   ej_skip_line(buffer, pos, 0);
 }
 
-EJBool ej_skip_whitespace(EJBuffer *buffer) {
-  gchar c;
+EJ_MODULE_EXPORT(EJBool) ej_skip_whitespace(EJBuffer *buffer) {
+  EJString c;
   while (true) {
     c = ej_read_c_inner(buffer, 0);
     if (c == '\0') { return false;}
@@ -293,7 +293,7 @@ EJBool ej_skip_whitespace(EJBuffer *buffer) {
   return true;
 }
 
-EJBool ej_skip_utf8_bom(EJBuffer *buffer) {
+EJ_MODULE_EXPORT(EJBool) ej_skip_utf8_bom(EJBuffer *buffer) {
   if ((buffer == NULL) || (buffer->content == NULL) || (buffer->offset != 0)) {
     return false;
   }
@@ -305,20 +305,20 @@ EJBool ej_skip_utf8_bom(EJBuffer *buffer) {
   return true;
 }
 
-static gchar ej_next_c_inner(EJBuffer *buffer) {
+static EJString ej_next_c_inner(EJBuffer *buffer) {
   ej_skip_c(buffer, ej_read_c_inner(buffer, 0));
 
   return ej_read_c_inner(buffer, 0);
 }
 
-gchar ej_next_c(EJBuffer *buffer) {
+EJ_MODULE_EXPORT(EJString) ej_next_c(EJBuffer *buffer) {
   if (buffer == NULL) { return '\0'; }
 
   return ej_next_c_inner(buffer);
 }
 
 static bool ej_comment_line(EJBuffer *buffer) {
-  gchar c;
+  EJString c;
   while (true) {
     c = ej_next_c_inner(buffer);
     if (c == '\0') { return false; }
@@ -330,7 +330,7 @@ static bool ej_comment_line(EJBuffer *buffer) {
 }
 
 static bool ej_comment_multiple(EJBuffer *buffer) {
-  gchar c;
+  EJString c;
 
   while (true) {
     c = ej_next_c_inner(buffer);
@@ -348,7 +348,7 @@ static bool ej_comment_multiple(EJBuffer *buffer) {
 }
 
 static void ej_comment(EJBuffer *buffer) {
-  gchar c;
+  EJString c;
 
   c = ej_read_c_inner(buffer, 0);
   if (c == '/') {
@@ -369,7 +369,7 @@ static void ej_comment(EJBuffer *buffer) {
   ej_skip_whitespace(buffer);
 }
 
-const gchar *ej_get_data_type_name(EJ_TYPE type) {
+EJ_MODULE_EXPORT(const EJString *) ej_get_data_type_name(EJ_TYPE type) {
   if (type < 0 || type > EJ_RAW) {
     return NULL;
   }
@@ -377,7 +377,7 @@ const gchar *ej_get_data_type_name(EJ_TYPE type) {
   return EJ_TYPE_NAMES[type];
 }
 
-EJBool ej_object_get_value(EJObject *data, gchar *key, EJValue **value) {
+EJ_MODULE_EXPORT(EJBool) ej_object_get_value(EJObject *data, EJString *key, EJValue **value) {
   size_t i;
   EJObjectPair *pair = NULL;
 
@@ -398,16 +398,16 @@ EJBool ej_object_get_value(EJObject *data, gchar *key, EJValue **value) {
   return false;
 }
 
-void ej_set_errorv(EJBuffer *buffer, gchar *fmt, va_list args) {
+void ej_set_errorv(EJBuffer *buffer, EJString *fmt, va_list args) {
   buffer->error->message = ej_strdup_vprintf(fmt, args);
   va_end(args);
 }
 
-EJError *ej_get_error(EJBuffer *buffer) {
+EJ_MODULE_EXPORT(EJError*) ej_get_error(EJBuffer *buffer) {
   return buffer->error;
 }
 
-void ej_set_error(EJBuffer *buffer, gchar *fmt, ...) {
+EJ_MODULE_EXPORT(void) ej_set_error(EJBuffer *buffer, EJString *fmt, ...) {
   va_list args;
 
   ej_assert(buffer != NULL && buffer->error != NULL && "buffer error should not be NULL");
@@ -426,7 +426,7 @@ void ej_set_error(EJBuffer *buffer, gchar *fmt, ...) {
 }
 
 /* print */
-EJBool ej_print_number(EJNumber *data, gchar **buffer) {
+EJ_MODULE_EXPORT(EJBool) ej_print_number(EJNumber *data, EJString **buffer) {
   switch (data->type)
   {
     case EJ_INT:
@@ -442,14 +442,14 @@ EJBool ej_print_number(EJNumber *data, gchar **buffer) {
   return true;
 }
 
-EJBool ej_print_bool(EJBool data, gchar **buffer) {
+EJ_MODULE_EXPORT(EJBool) ej_print_bool(EJBool data, EJString **buffer) {
   *buffer = data ? ej_strdup("true"): ej_strdup("false");
   return true;
 }
 
-EJBool ej_print_array_value(size_t arrlen, size_t index, EJValue *data, gchar **buffer) {
+EJ_MODULE_EXPORT(EJBool) ej_print_array_value(size_t arrlen, size_t index, EJValue *data, EJString **buffer) {
   GString *value;
-  gchar *str = NULL;
+  EJString *str = NULL;
 
   ej_assert(index < arrlen);
 
@@ -470,9 +470,9 @@ EJBool ej_print_array_value(size_t arrlen, size_t index, EJValue *data, gchar **
   return true;
 }
 
-EJBool ej_print_array(EJArray *data, gchar **buffer) {
+EJ_MODULE_EXPORT(EJBool) ej_print_array(EJArray *data, EJString **buffer) {
   GString *value;
-  gchar *str;
+  EJString *str;
   size_t i, len;
   if (!data) { return false; }
 
@@ -488,8 +488,8 @@ EJBool ej_print_array(EJArray *data, gchar **buffer) {
   return true;
 }
 
-EJBool ej_print_object_pair_prop(EJArray *data, gchar **buffer) {
-  gchar *key = NULL, *prop = NULL;
+EJ_MODULE_EXPORT(EJBool) ej_print_object_pair_prop(EJArray *data, EJString **buffer) {
+  EJString *prop = NULL;
   EJObjectPair *op = NULL;
   GString *value;
   guint size, i;
@@ -517,10 +517,10 @@ EJBool ej_print_object_pair_prop(EJArray *data, gchar **buffer) {
   return true;
 }
 
-EJBool ej_print_object_pair(EJObjectPair *data, gchar **buffer) {
+EJ_MODULE_EXPORT(EJBool) ej_print_object_pair(EJObjectPair *data, EJString **buffer) {
   ej_return_val_if_fail(data->key != NULL, false);
 
-  gchar *prop = NULL, *value = NULL, *key = NULL;
+  EJString *prop = NULL, *value = NULL, *key = NULL;
 
   if (!ej_print_value(data->key, &key)) {
     goto fail;
@@ -544,7 +544,7 @@ fail:
   return false;
 }
 
-EJBool ej_print_eobject(EJObject *data, gchar **buffer) {
+EJBool ej_print_eobject(EJObject *data, EJString **buffer) {
   GString *value;
 
   if (!data) { return false; }
@@ -560,7 +560,7 @@ EJBool ej_print_eobject(EJObject *data, gchar **buffer) {
   return true;
 }
 
-EJBool ej_print_object(EJObject *data, gchar **buffer) {
+EJ_MODULE_EXPORT(EJBool) ej_print_object(EJObject *data, EJString **buffer) {
   GString *value;
 
   if (!data) { return false; }
@@ -582,13 +582,13 @@ EJBool ej_print_object(EJObject *data, gchar **buffer) {
   return true;
 }
 
-EJBool ej_print_value(EJValue *data, gchar **buffer) {
+EJ_MODULE_EXPORT(EJBool) ej_print_value(EJValue *data, EJString **buffer) {
   if (!data) { return false; };
 
   switch (data->type)
   {
     case EJ_BOOLEAN:
-      return ej_print_bool(data, buffer);
+      return ej_print_bool(data->v.bvalue, buffer);
     case EJ_NULL: {
       *buffer = ej_strdup("null");
       return true;
@@ -620,11 +620,11 @@ static void ej_print_value_inner(EJValue *data, gpointer user_data) {
 }
 
 static void ej_print_object_pair_inner(EJObjectPair *pair, gpointer user_data) {
-  gchar *str = NULL;
-  gchar **udata;
+  EJString *str = NULL;
+  EJString **udata;
   GString *value;
 
-  udata = (gchar **)user_data;
+  udata = (EJString **)user_data;
   if(*udata != NULL) {
     value = ej_string_new(*udata); ej_free(*udata);
   }
@@ -648,7 +648,7 @@ static void ej_print_array_value_inner(size_t arrlen, size_t index, EJValue *dat
 }
 
 /* parse */
-EJBool ej_parse_bool(EJBuffer *buffer, EJBool *data) {
+EJ_MODULE_EXPORT(EJBool) ej_parse_bool(EJBuffer *buffer, EJBool *data) {
   ej_return_val_if_fail(data != NULL, false);
 
   if (ej_token_is(buffer, EJ_TOKEN_FALSE)) {
@@ -667,7 +667,6 @@ EJBool ej_parse_bool(EJBuffer *buffer, EJBool *data) {
 static EJBool ej_parse_array_inner(EJBuffer *buffer, EJArray **data) {
   EJArray *arr;
   EJValue *value = NULL;
-  size_t i = 0;
 
   ej_buffer_skip(buffer, 1);
 
@@ -709,7 +708,7 @@ fail:
   return false;
 }
 
-EJBool ej_parse_array(EJBuffer *buffer, EJArray **data) {
+EJ_MODULE_EXPORT(EJBool) ej_parse_array(EJBuffer *buffer, EJArray **data) {
   if (!ej_token_is(buffer, EJ_TOKEN_BKT_START)) {
     return false;
   }
@@ -717,9 +716,72 @@ EJBool ej_parse_array(EJBuffer *buffer, EJArray **data) {
   return ej_parse_array_inner(buffer, data);
 }
 
+static EJString *ej_remove_escaped_string(EJString *data, size_t len, size_t skip) {
+  ej_assert(data != NULL && len <= ej_strlen(data) && skip < len);
+
+  size_t i = 0, j = 0;
+  EJString c, n;
+  EJString *ndata = data;
+
+  while(i < len) {
+    c = *(data + i);
+    if (c == '\0') { return data; }
+
+    if (c == '\\') {
+      i += 1;
+      n = *(data + i);
+
+      switch (n)
+      {
+      case 'b':
+        c = '\b';
+        break;
+      case 'f':
+        c = '\f';
+        break;
+      case 'n':
+        c = '\n';
+        break;
+      case 'r':
+        c = '\r';
+        break;
+      case 't':
+        c = '\t';
+        break;
+      case '\"':
+        c = '\"';
+        break;
+      case '\\':
+        c = '\\';
+        break;
+      // case 'u':
+      //   break;
+      case '/':
+        c = '/';
+        break;
+      default:
+        goto fail;
+      }
+    }
+
+    *(ndata + j) = c;
+    j += 1;
+    i += 1;
+  }
+
+  ndata[j] = '\0';
+  return ndata;
+
+fail:
+  ej_free(ndata);
+  return NULL;
+}
+
 static EJBool ej_parse_string_inner(EJBuffer *buffer, EJString **data) {
   size_t len = 0;
-  gchar c, n;
+  EJString c, n;
+  size_t skip = 0;
+  EJString *ndata;
 
   ej_buffer_skip(buffer, 1);
 
@@ -730,6 +792,7 @@ static EJBool ej_parse_string_inner(EJBuffer *buffer, EJString **data) {
 
     if (c == '\\') {
       n = ej_read_c(buffer, len + 1);
+      skip += 1;
 
       switch (n)
       {
@@ -763,13 +826,23 @@ static EJBool ej_parse_string_inner(EJBuffer *buffer, EJString **data) {
     len++;
   }
 
-  *data = (EJString *)ej_strndup(ej_read_inner(buffer, 0), len);
+  ndata = (EJString *) ej_strndup(ej_read_inner(buffer, 0), len);
+  *data = ej_remove_escaped_string(ndata, len, skip);
+
+  if(*data == NULL) {
+    ej_free(ndata);
+    goto fail;
+  }
 
   ej_buffer_skip(buffer, len + 1);
   return true;
+
+fail:
+  ej_set_error(buffer, "Parse string failed");
+  return false;
 }
 
-EJBool ej_parse_string(EJBuffer *buffer, EJString **data) {
+EJ_MODULE_EXPORT(EJBool) ej_parse_string(EJBuffer *buffer, EJString **data) {
   if (!ej_token_is(buffer, EJ_TOKEN_QMARK)) {
     return false;
   }
@@ -777,11 +850,11 @@ EJBool ej_parse_string(EJBuffer *buffer, EJString **data) {
   return ej_parse_string_inner(buffer, data);
 }
 
-EJBool ej_parse_key_without_quote(EJBuffer *buffer, EJString **data) {
-  gchar c;
+EJ_MODULE_EXPORT(EJBool) ej_parse_key_without_quote(EJBuffer *buffer, EJString **data) {
+  EJString c;
   size_t pos = 0;
 
-  for (pos = 0; c = ej_read_c(buffer, pos); pos++) {
+  for (pos = 0; (c = ej_read_c(buffer, pos)) != '\0'; pos++) {
     if (!ej_ascii_isalnum(c) && c != '-' && c != '_') {
       if (pos == 0) {
         ej_set_error(buffer, "Key length cannot be zero.");
@@ -803,7 +876,7 @@ EJBool ej_parse_key_without_quote(EJBuffer *buffer, EJString **data) {
   return true;
 }
 
-EJBool ej_parse_key(EJBuffer *buffer, EJValue **data) {
+EJ_MODULE_EXPORT(EJBool) ej_parse_key(EJBuffer *buffer, EJValue **data) {
   if (!ej_skip_whitespace(buffer)) { return false; }
   if (ej_token_is(buffer, EJ_TOKEN_CUR_END)) { return false; }
 
@@ -845,11 +918,11 @@ fail:
 static EJBool ej_parse_number_inner(EJBuffer *buffer, EJNumber **data) {
   EJNumber *num;
   size_t len;
-  gchar c;
-  gchar *nstr;
+  EJString c;
+  EJString *nstr;
 
   size_t type = EJ_INT;
-  for (len = 0; c = ej_read_c(buffer, len); len++) {
+  for (len = 0; (c = ej_read_c(buffer, len)) != '\0'; len++) {
     if (c == '.') {
       if (type == EJ_DOUBLE) { goto fail; }
       type = EJ_DOUBLE;
@@ -886,7 +959,7 @@ fail:
   return false;
 }
 
-EJBool ej_parse_number(EJBuffer *buffer, EJNumber **data) {
+EJ_MODULE_EXPORT(EJBool) ej_parse_number(EJBuffer *buffer, EJNumber **data) {
   if (!ej_token_is(buffer, EJ_TOKEN_HYPHEN) && !ej_ascii_isdigit(*ej_read_inner(buffer, 0))) {
     return false;
   }
@@ -894,7 +967,7 @@ EJBool ej_parse_number(EJBuffer *buffer, EJNumber **data) {
   return ej_parse_number_inner(buffer, data);
 }
 
-EJBool ej_parse_object_props(EJBuffer *buffer, EJObject *object, EJArray **data) {
+EJ_MODULE_EXPORT(EJBool) ej_parse_object_props(EJBuffer *buffer, EJObject *object, EJArray **data) {
   EJArray *props = NULL;
   EJObjectPair *pair = NULL;
 
@@ -971,7 +1044,7 @@ fail:
   return false;
 }
 
-EJBool ej_parse_object_pair(EJBuffer *buffer, EJObject *obj, EJObjectPair **data) {
+EJ_MODULE_EXPORT(EJBool) ej_parse_object_pair(EJBuffer *buffer, EJObject *obj, EJObjectPair **data) {
   EJObjectPair *pair;
 
   if (!ej_skip_whitespace(buffer)) { return false; }
@@ -1062,7 +1135,7 @@ fail:
   return false;
 }
 
-EJBool ej_parse_object(EJBuffer *buffer, EJObject **data) {
+EJ_MODULE_EXPORT(EJBool) ej_parse_object(EJBuffer *buffer, EJObject **data) {
   if (!ej_token_is(buffer, EJ_TOKEN_CUR_START)) {
     return false;
   }
@@ -1070,7 +1143,7 @@ EJBool ej_parse_object(EJBuffer *buffer, EJObject **data) {
   return ej_parse_object_inner(buffer, data);
 }
 
-EJBool ej_parse_value(EJBuffer *buffer, EJValue **data) {
+EJ_MODULE_EXPORT(EJBool) ej_parse_value(EJBuffer *buffer, EJValue **data) {
   EJValue *value = ej_new0(EJValue, 1);
 
   value->type = EJ_RAW;
@@ -1138,7 +1211,7 @@ fail:
   return false;
 }
 
-EJBuffer *ej_buffer_mode_new(const gchar *content, size_t len, EJ_MODE_TYPE mode) {
+EJ_MODULE_EXPORT(EJBuffer*) ej_buffer_mode_new(const EJString *content, size_t len, EJ_MODE_TYPE mode) {
   ej_return_val_if_fail(content != NULL, NULL);
 
   EJBuffer *buffer = ej_new0(EJBuffer, 1);
@@ -1152,15 +1225,15 @@ EJBuffer *ej_buffer_mode_new(const gchar *content, size_t len, EJ_MODE_TYPE mode
   return buffer;
 }
 
-EJBuffer *ej_buffer_new(const gchar *content, size_t len) {
+EJ_MODULE_EXPORT(EJBuffer *) ej_buffer_new(const EJString *content, size_t len) {
   return ej_buffer_mode_new(content, len, EJ_MODE_RECURSIVE);
 }
 
-EJValue *ej_parse(EJError **error, const gchar *content) {
+EJ_MODULE_EXPORT(EJValue*) ej_parse(EJError **error, const EJString *content) {
   EJBuffer *buffer;
   EJValue *value = NULL;
 
-  buffer = ej_buffer_new(content, ej_strlen((const gchar *)content));
+  buffer = ej_buffer_new(content, ej_strlen((const EJString *)content));
   ej_skip_utf8_bom(buffer);
 
   if (!ej_parse_value(buffer, &value)) {

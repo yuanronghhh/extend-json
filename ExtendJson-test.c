@@ -127,6 +127,7 @@ static void test_comment_with_new_line(void) {
   EJError *error = NULL;
 
   EJValue *value = ej_parse(&error, str);
+  TEST_ASSERT_NULL(value);
   TEST_ASSERT_NOT_NULL(error);
   TEST_ASSERT_EQUAL(error->row, 3);
   TEST_ASSERT_EQUAL(error->col, 14);
@@ -141,6 +142,7 @@ static void test_comment_follow_comment(void) {
   EJError *error = NULL;
 
   EJValue *value = ej_parse(&error, str);
+  TEST_ASSERT_NULL(value);
   TEST_ASSERT_NOT_NULL(error);
   TEST_ASSERT_EQUAL(error->row, 3);
   TEST_ASSERT_EQUAL(error->col, 28);
@@ -155,6 +157,7 @@ static void test_comment_not_close(void) {
   EJError *error = NULL;
 
   EJValue *value = ej_parse(&error, str);
+  TEST_ASSERT_NULL(value);
   TEST_ASSERT_NOT_NULL(error);
   TEST_ASSERT_EQUAL(error->row, 3);
   TEST_ASSERT_EQUAL(error->col, 44);
@@ -228,7 +231,6 @@ static void test_parse_extend_key(void) {
   gchar *str = "{ @{event:\"click\"}: \"name1\" }";
   EJError *error = NULL;
   EJObjectPair *pair = NULL, *npair = NULL;
-  EJObject *obj = NULL;
   EJValue *value = ej_parse(&error, str);
   TEST_ASSERT_NULL(error);
   TEST_ASSERT_NOT_NULL(value);
@@ -248,7 +250,6 @@ static void test_parse_extend_value(void) {
   gchar *str = "{ goodKey: @{bind: \"value1\"} }";
   EJError *error = NULL;
   EJObjectPair *pair = NULL, *npair = NULL;
-  EJObject *obj = NULL;
   EJValue *value = ej_parse(&error, str);
   TEST_ASSERT_NULL(error);
   TEST_ASSERT_NOT_NULL(value);
@@ -280,6 +281,25 @@ static void test_print_value(void) {
   ej_free_value(value);
 }
 
+static void test_with_emoji(void) {
+  gchar *str = "{ \"中文\": \"he don\\\\\\\"t need you. 😂\" }";
+  EJError *error = NULL;
+  gchar *out = NULL;
+  EJValue *value = ej_parse(&error, str);
+  gchar *astr;
+
+  TEST_ASSERT_NULL(error);
+  TEST_ASSERT_NOT_NULL(value);
+
+  TEST_ASSERT_TRUE(ej_print_value(value, &out));
+
+  astr = "{\"中文\":\"he don\\\"t need you. 😂\"}";
+  TEST_ASSERT_EQUAL_STRING(out, astr);
+
+  g_free(out);
+  ej_free_value(value);
+}
+
 int main() {
   UNITY_BEGIN();
   {
@@ -299,6 +319,7 @@ int main() {
     RUN_TEST(test_parse_free_var_type_array);
     RUN_TEST(test_comment_with_new_line);
     RUN_TEST(test_comment_follow_comment);
+    RUN_TEST(test_with_emoji);
   }
   UNITY_END();
   return 0;
